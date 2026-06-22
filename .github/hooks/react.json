@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ./dist/hooks/inject-catalog.js",
+        "timeout": 15
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./dist/hooks/react-step.js",
+        "timeout": 60
+      }
+    ]
+  }
+}

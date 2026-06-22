@@ -1,0 +1,18 @@
+{
+  "name": "react-hooks-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Drive a no-tool-calling LLM as a ReAct agent using VS Code agent hooks.",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test test/*.test.ts",
+    "inject": "tsx src/hooks/inject-catalog.ts",
+    "step": "tsx src/hooks/react-step.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
