@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
@@ -140,6 +139,6 @@ async function main(): Promise<void> {
 }
 
 // Run main() only when invoked directly (not when imported by tests).
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (require.main === module) {
   void main();
 }

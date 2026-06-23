@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,22 +46,23 @@ function writeTranscript(text: string): string {
 
 test("Stop step executes a command and blocks with the observation", async () => {
   const tp = writeTranscript('Thought: greet\nAction: run_command\nAction Input: {"cmd":"echo hello-from-react"}');
-  const out = await runStep({ transcript_path: tp, session_id: "t1" });
+  const out = await runStep({ transcript_path: tp, session_id: randomUUID() });
   assert.ok("decision" in out && out.decision === "block");
   if ("decision" in out) assert.match(out.reason, /hello-from-react/);
 });
 
 test("Stop step allows termination on a Final Answer", async () => {
   const tp = writeTranscript("Final Answer: done.");
-  const out = await runStep({ transcript_path: tp, session_id: "t2" });
+  const out = await runStep({ transcript_path: tp, session_id: randomUUID() });
   assert.deepEqual(out, { continue: true });
 });
 
 test("Stop step caps the loop, then forces termination", async () => {
   const tp = writeTranscript('Action: run_command\nAction Input: {"cmd":"echo x"}');
+  const session = randomUUID();
   const outputs: Awaited<ReturnType<typeof runStep>>[] = [];
   for (let i = 0; i < 20; i++) {
-    outputs.push(await runStep({ transcript_path: tp, session_id: "t3" }));
+    outputs.push(await runStep({ transcript_path: tp, session_id: session }));
   }
   // A "finalize" nudge is emitted once when the cap is hit...
   assert.ok(

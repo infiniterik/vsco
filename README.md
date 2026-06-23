@@ -23,20 +23,28 @@ SessionStart ─► inject tool catalog + ReAct format as text
 The whole tool surface is a single `run_command` shell tool, so the `Stop` hook
 executes actions directly — no separate tool server.
 
-## Setup
+## Install (VS Code extension / VSIX)
+
+This is packaged as a VS Code extension that bundles the hook runtime.
+
+1. Install the VSIX:
+   - Command Palette → **Extensions: Install from VSIX…** → pick `react-byok.vsix`, or
+   - `code --install-extension react-byok.vsix`
+2. Open the workspace you want to use it in.
+3. Command Palette → **ReAct BYOK: Set up in this workspace**, and enter your model id.
+   This copies the self-contained runtime into `.react-byok/` and writes
+   `.github/hooks/react.json` + `.github/agents/react-byok.agent.md` (all relative
+   paths — committable, no `npm install` needed in the target project).
+4. Enable the `chat.useCustomAgentHooks` setting (hooks are a Preview feature).
+5. Select the **ReAct BYOK** agent in chat.
+
+### Build the VSIX yourself
 
 ```bash
 npm install
-npm run build      # compiles src/ -> dist/ ; hooks run the compiled JS
+npm run package    # builds (src/ -> dist/) and writes react-byok.vsix
 npm test           # parser + simulated Stop-step tests
 ```
-
-Then in VS Code (hooks are a Preview feature):
-
-1. Enable `chat.useCustomAgentHooks`.
-2. Select the **ReAct BYOK** agent (`.github/agents/react-byok.agent.md`) and point
-   its `model:` at a no-tool BYOK model.
-3. The workspace hooks in `.github/hooks/react.json` activate automatically.
 
 ## Layout
 
