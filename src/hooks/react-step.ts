@@ -32,7 +32,23 @@ export interface StopInput {
   stop_hook_active?: boolean;
 }
 
-export type StopOutput = { decision: "block"; reason: string } | { continue: true };
+export type StopOutput =
+  | { hookSpecificOutput: { hookEventName: "Stop"; decision: "block"; reason: string } }
+  | { continue: true };
+
+/**
+ * Block the agent from stopping so it takes another turn. VS Code requires the
+ * decision/reason to be nested under `hookSpecificOutput` (top-level fields are
+ * ignored), and `reason` is what the model sees next — we put the Observation there.
+ */
+function block(reason: string): StopOutput {
+  return { hookSpecificOutput: { hookEventName: "Stop", decision: "block", reason } };
+}
+
+/** Let the agent finish its turn / end the session. */
+function allowStop(): StopOutput {
+  return { continue: true };
+}
 
 function counterPath(sessionId: string): string {
   const dir = join(tmpdir(), "react-hook");
@@ -80,57 +96,53 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
   // (The counter is intentionally NOT reset here, so the terminal state is stable.)
   const iter = bumpIteration(sessionId);
   if (iter === MAX_ITERATIONS + 1) {
-    return {
-      decision: "block",
-      reason:
-        `ReAct loop reached the maximum of ${MAX_ITERATIONS} steps. ` +
+    return block(
+      `ReAct loop reached the maximum of ${MAX_ITERATIONS} steps. ` +
         'Stop using tools and respond now with a line starting "Final Answer:".',
-    };
+    );
   }
   if (iter > MAX_ITERATIONS + 1) {
-    return { continue: true };
+    return allowStop();
   }
 
-  if (!input.transcript_path) return { continue: true };
+  if (!input.transcript_path) return allowStop();
   const text = readLastAssistantText(input.transcript_path);
-  if (!text) return { continue: true };
+  if (!text) return allowStop();
 
   const turn = parseAssistantTurn(text);
 
   if (turn.kind === "final") {
     clearCounter(sessionId);
-    return { continue: true };
+    return allowStop();
   }
 
   if (turn.kind === "error") {
-    return { decision: "block", reason: turn.reason };
+    return block(turn.reason);
   }
 
   // turn.kind === "action"
   const tool = getTool(turn.action);
   if (!tool) {
-    return {
-      decision: "block",
-      reason: `Unknown tool "${turn.action}". Available tools: ${tools
+    return block(
+      `Unknown tool "${turn.action}". Available tools: ${tools
         .map((t) => t.name)
         .join(", ")}. Choose a valid Action.`,
-    };
+    );
   }
 
   const missing = tool.inputSchema.required.filter(
     (k) => !(k in turn.input) || turn.input[k] === "" || turn.input[k] == null,
   );
   if (missing.length) {
-    return {
-      decision: "block",
-      reason: `Action Input for "${tool.name}" is missing required field(s): ${missing.join(
+    return block(
+      `Action Input for "${tool.name}" is missing required field(s): ${missing.join(
         ", ",
       )}. Provide a complete single-line JSON object.`,
-    };
+    );
   }
 
   const result = await tool.execute(turn.input);
-  return { decision: "block", reason: formatObservation(tool.name, result) };
+  return block(formatObservation(tool.name, result));
 }
 
 async function main(): Promise<void> {

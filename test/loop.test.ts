@@ -44,11 +44,29 @@ function writeTranscript(text: string): string {
   return p;
 }
 
+// Pull the block reason out of the wire shape VS Code expects, or undefined.
+function blockReason(out: Awaited<ReturnType<typeof runStep>>): string | undefined {
+  return "hookSpecificOutput" in out && out.hookSpecificOutput.decision === "block"
+    ? out.hookSpecificOutput.reason
+    : undefined;
+}
+
 test("Stop step executes a command and blocks with the observation", async () => {
   const tp = writeTranscript('Thought: greet\nAction: run_command\nAction Input: {"cmd":"echo hello-from-react"}');
   const out = await runStep({ transcript_path: tp, session_id: randomUUID() });
-  assert.ok("decision" in out && out.decision === "block");
-  if ("decision" in out) assert.match(out.reason, /hello-from-react/);
+  assert.match(blockReason(out) ?? "", /hello-from-react/);
+});
+
+test("a blocking Stop output nests decision/reason under hookSpecificOutput", async () => {
+  // Regression guard: VS Code ignores top-level decision/reason.
+  const tp = writeTranscript('Action: run_command\nAction Input: {"cmd":"echo x"}');
+  const out = await runStep({ transcript_path: tp, session_id: randomUUID() });
+  assert.ok("hookSpecificOutput" in out, "block output must use hookSpecificOutput");
+  if ("hookSpecificOutput" in out) {
+    assert.equal(out.hookSpecificOutput.hookEventName, "Stop");
+    assert.equal(out.hookSpecificOutput.decision, "block");
+    assert.ok(typeof out.hookSpecificOutput.reason === "string");
+  }
 });
 
 test("Stop step allows termination on a Final Answer", async () => {
@@ -66,7 +84,7 @@ test("Stop step caps the loop, then forces termination", async () => {
   }
   // A "finalize" nudge is emitted once when the cap is hit...
   assert.ok(
-    outputs.some((o) => "decision" in o && o.decision === "block" && /maximum/.test(o.reason)),
+    outputs.some((o) => /maximum/.test(blockReason(o) ?? "")),
     "expected a maximum-steps nudge",
   );
   // ...and the loop is guaranteed to terminate afterwards.
