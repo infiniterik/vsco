@@ -2,7 +2,7 @@
   "name": "react-byok",
   "displayName": "ReAct BYOK",
   "description": "Run a no-tool-calling LLM as a ReAct agent via VS Code agent hooks.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "react-byok",
   "license": "MIT",
   "repository": {

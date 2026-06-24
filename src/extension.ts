@@ -61,15 +61,13 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     //    already ships (process.execPath) rather than a system `node`, so this works
     //    on machines with no Node/dev setup installed. ELECTRON_RUN_AS_NODE makes the
     //    VS Code executable behave as plain Node instead of launching the UI.
-    const injectCmd = nodeCommand(path.join(root, ".react-byok", "hooks", "inject-catalog.js"));
-    const stepCmd = nodeCommand(path.join(root, ".react-byok", "hooks", "react-step.js"));
     const hooks = {
       hooks: {
         SessionStart: [
-          { type: "command", command: injectCmd, env: { ELECTRON_RUN_AS_NODE: "1" }, timeout: 15 },
+          hookEntry(path.join(root, ".react-byok", "hooks", "inject-catalog.js"), 15),
         ],
         Stop: [
-          { type: "command", command: stepCmd, env: { ELECTRON_RUN_AS_NODE: "1" }, timeout: 60 },
+          hookEntry(path.join(root, ".react-byok", "hooks", "react-step.js"), 60),
         ],
       },
     };
@@ -102,14 +100,28 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
 }
 
 /**
- * Build a hook command that runs `scriptPath` with VS Code's own Node runtime.
+ * Build a hook entry that runs `scriptPath` with VS Code's own Node runtime.
+ *
  * `process.execPath` is the VS Code/Electron executable; paired with
  * ELECTRON_RUN_AS_NODE=1 (set in the hook's env) it runs as plain Node, so no
- * separate Node installation is required. Both paths are absolute and quoted to
- * tolerate spaces (e.g. "C:\\Program Files\\...").
+ * separate Node installation is required.
+ *
+ * Two command forms are emitted because the host runs hook commands in the OS
+ * default shell:
+ *  - `command` (macOS/Linux, POSIX shells): a leading quoted path is executed fine.
+ *  - `windows` (PowerShell, VS Code's default on Windows): PowerShell parses a
+ *    leading quoted string as a string literal, NOT a command, so it needs the call
+ *    operator `&`. Single-quoted literals avoid backslash/space escaping problems.
  */
-function nodeCommand(scriptPath: string): string {
-  return `"${process.execPath}" "${scriptPath}"`;
+function hookEntry(scriptPath: string, timeout: number) {
+  const exe = process.execPath;
+  return {
+    type: "command",
+    command: `"${exe}" "${scriptPath}"`,
+    windows: `& '${exe}' '${scriptPath}'`,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+    timeout,
+  };
 }
 
 async function writeText(file: string, content: string): Promise<void> {
