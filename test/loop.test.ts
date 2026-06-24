@@ -7,6 +7,30 @@ import test from "node:test";
 
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
+import { readLastAssistantText } from "../src/transcript.js";
+
+test("reads the last assistant.message from a real Copilot transcript", () => {
+  // Real schema captured from VS Code / Copilot agent (GitHub.copilot-chat transcript).
+  const jsonl = [
+    JSON.stringify({ type: "session.start", data: { sessionId: "s" }, id: "a", parentId: null }),
+    JSON.stringify({ type: "user.message", data: { content: "do a thing" }, id: "b" }),
+    JSON.stringify({ type: "assistant.turn_start", data: { turnId: "0" }, id: "c" }),
+    JSON.stringify({
+      type: "assistant.message",
+      data: { messageId: "m1", content: "Action: run_command\nAction Input: {\"cmd\":\"ls\"}", toolRequests: [] },
+      id: "d",
+    }),
+    JSON.stringify({ type: "assistant.turn_end", data: { turnId: "0" }, id: "e" }),
+  ].join("\n");
+  const dir = mkdtempSync(join(tmpdir(), "react-tx-"));
+  const p = join(dir, "t.jsonl");
+  writeFileSync(p, jsonl);
+  const text = readLastAssistantText(p);
+  assert.ok(text, "expected to read assistant text");
+  assert.match(text ?? "", /Action: run_command/);
+  // It must NOT pick the user message.
+  assert.doesNotMatch(text ?? "", /do a thing/);
+});
 
 test("parser extracts an action and its JSON input", () => {
   const t = parseAssistantTurn('Thought: list files\nAction: run_command\nAction Input: {"cmd":"ls"}');

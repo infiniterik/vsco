@@ -122,8 +122,13 @@ export function parseAssistantTurn(text: string): ParsedTurn {
   return {
     kind: "error",
     reason:
-      'No "Action"/"Action Input" pair and no "Final Answer" were found. ' +
-      "Follow the required format: either a tool step or a Final Answer.",
+      "STOP. You did not use the required format, so NOTHING happened — no file was " +
+      "created, no command ran. Do not claim you did anything; you have no native " +
+      "tools here and cannot act except through this protocol. Redo your reply now as " +
+      "EXACTLY one of:\n" +
+      'Action: <tool name>\nAction Input: <single-line JSON>\n' +
+      "— or, only if the task is genuinely complete, a line starting with " +
+      '"Final Answer:". Output nothing else.',
   };
 }
 

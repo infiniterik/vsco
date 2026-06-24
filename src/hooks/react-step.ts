@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { logDebug, snippet } from "../debug.js";
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
-import { readLastAssistantText } from "../transcript.js";
+import { readLastAssistantText, sampleTranscript } from "../transcript.js";
 import { parseStdin, readStdin, writeOutput } from "./io.js";
 
 /**
@@ -151,7 +151,11 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
     hasText: Boolean(text),
     text: snippet(text),
   });
-  if (!text) return allowStop();
+  if (!text) {
+    // Parsing found nothing — dump a sample so an unexpected format reveals itself.
+    logDebug("stop.no_text", { sample: sampleTranscript(input.transcript_path) });
+    return allowStop();
+  }
 
   const turn = parseAssistantTurn(text);
   logDebug("stop.parsed", {
