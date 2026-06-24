@@ -25,6 +25,9 @@ import { parseStdin, readStdin, writeOutput } from "./io.js";
  */
 
 const MAX_ITERATIONS = 15;
+// Consecutive malformed actions to tolerate (with escalating guidance) before
+// giving up and asking for a Final Answer. Reset whenever a valid step occurs.
+const MAX_INVALID_RETRIES = 3;
 
 export interface StopInput {
   transcript_path?: string;
@@ -50,14 +53,14 @@ function allowStop(): StopOutput {
   return { continue: true };
 }
 
-function counterPath(sessionId: string): string {
+function counterPath(sessionId: string, kind: "step" | "invalid"): string {
   const dir = join(tmpdir(), "react-hook");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${sessionId.replace(/[^\w.-]/g, "_")}.count`);
+  return join(dir, `${sessionId.replace(/[^\w.-]/g, "_")}.${kind}`);
 }
 
-function bumpIteration(sessionId: string): number {
-  const p = counterPath(sessionId);
+function bumpCounter(sessionId: string, kind: "step" | "invalid"): number {
+  const p = counterPath(sessionId, kind);
   let n = 0;
   try {
     n = parseInt(readFileSync(p, "utf8").trim(), 10) || 0;
@@ -69,12 +72,41 @@ function bumpIteration(sessionId: string): number {
   return n;
 }
 
-function clearCounter(sessionId: string): void {
+function clearCounter(sessionId: string, kind: "step" | "invalid"): void {
   try {
-    writeFileSync(counterPath(sessionId), "0");
+    writeFileSync(counterPath(sessionId, kind), "0");
   } catch {
     /* best effort */
   }
+}
+
+/**
+ * The model produced something we can't run (unparseable, unknown tool, or missing
+ * fields). Ask it to regenerate the action, escalating the guidance, but bound the
+ * number of consecutive malformed attempts so a confused model can't burn the whole
+ * step budget on garbage. Returns a corrective block, a one-time "just answer" nudge,
+ * then lets the session end.
+ *
+ * The counter resets on any valid step (see runStep), so this only caps *consecutive*
+ * invalid attempts.
+ */
+function regenerate(sessionId: string, reason: string): StopOutput {
+  const tries = bumpCounter(sessionId, "invalid");
+  if (tries <= MAX_INVALID_RETRIES) {
+    const escalation =
+      tries >= 2
+        ? `\n(Attempt ${tries} of ${MAX_INVALID_RETRIES}. Re-read the required format and output exactly ONE valid step: either an Action with a single-line JSON "Action Input", or a "Final Answer:".)`
+        : "";
+    return block(reason + escalation);
+  }
+  if (tries === MAX_INVALID_RETRIES + 1) {
+    return block(
+      `Could not parse a valid Action after ${MAX_INVALID_RETRIES} attempts. ` +
+        'Do not use a tool. Respond now with a line starting "Final Answer:" using what you already know.',
+    );
+  }
+  // Still malformed after the finalize nudge — end the session to guarantee termination.
+  return allowStop();
 }
 
 function formatObservation(toolName: string, r: ToolResult): string {
@@ -94,7 +126,7 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
   // Safety valve: bound the number of automated continuations. Give exactly one
   // nudge to finalize, then force the session to end so the loop always terminates.
   // (The counter is intentionally NOT reset here, so the terminal state is stable.)
-  const iter = bumpIteration(sessionId);
+  const iter = bumpCounter(sessionId, "step");
   if (iter === MAX_ITERATIONS + 1) {
     return block(
       `ReAct loop reached the maximum of ${MAX_ITERATIONS} steps. ` +
@@ -112,18 +144,20 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
   const turn = parseAssistantTurn(text);
 
   if (turn.kind === "final") {
-    clearCounter(sessionId);
+    clearCounter(sessionId, "step");
+    clearCounter(sessionId, "invalid");
     return allowStop();
   }
 
   if (turn.kind === "error") {
-    return block(turn.reason);
+    return regenerate(sessionId, turn.reason);
   }
 
   // turn.kind === "action"
   const tool = getTool(turn.action);
   if (!tool) {
-    return block(
+    return regenerate(
+      sessionId,
       `Unknown tool "${turn.action}". Available tools: ${tools
         .map((t) => t.name)
         .join(", ")}. Choose a valid Action.`,
@@ -134,13 +168,16 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
     (k) => !(k in turn.input) || turn.input[k] === "" || turn.input[k] == null,
   );
   if (missing.length) {
-    return block(
+    return regenerate(
+      sessionId,
       `Action Input for "${tool.name}" is missing required field(s): ${missing.join(
         ", ",
       )}. Provide a complete single-line JSON object.`,
     );
   }
 
+  // A valid, runnable action — the model recovered, so reset the invalid streak.
+  clearCounter(sessionId, "invalid");
   const result = await tool.execute(turn.input);
   return block(formatObservation(tool.name, result));
 }

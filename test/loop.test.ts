@@ -90,3 +90,34 @@ test("Stop step caps the loop, then forces termination", async () => {
   // ...and the loop is guaranteed to terminate afterwards.
   assert.deepEqual(outputs.at(-1), { continue: true });
 });
+
+test("invalid actions are re-prompted, bounded, then terminated", async () => {
+  const tp = writeTranscript("Action: run_command\nAction Input: not json");
+  const session = randomUUID();
+  const outs: Awaited<ReturnType<typeof runStep>>[] = [];
+  for (let i = 0; i < 6; i++) {
+    outs.push(await runStep({ transcript_path: tp, session_id: session }));
+  }
+  // First attempt asks the model to regenerate a valid action.
+  assert.match(blockReason(outs[0]) ?? "", /JSON/);
+  // After the retry budget, it stops correcting and asks for a Final Answer...
+  assert.ok(
+    outs.some((o) => /Could not parse a valid Action after/.test(blockReason(o) ?? "")),
+    "expected a give-up / finalize nudge",
+  );
+  // ...and ultimately terminates.
+  assert.deepEqual(outs.at(-1), { continue: true });
+});
+
+test("a valid action resets the invalid-retry streak", async () => {
+  const session = randomUUID();
+  const bad = writeTranscript("Action: run_command\nAction Input: not json");
+  const good = writeTranscript('Action: run_command\nAction Input: {"cmd":"echo ok"}');
+  await runStep({ transcript_path: bad, session_id: session }); // invalid #1
+  await runStep({ transcript_path: bad, session_id: session }); // invalid #2
+  await runStep({ transcript_path: good, session_id: session }); // valid -> streak reset
+  const out = await runStep({ transcript_path: bad, session_id: session }); // back to a plain regenerate
+  const reason = blockReason(out) ?? "";
+  assert.match(reason, /JSON/);
+  assert.doesNotMatch(reason, /Could not parse a valid Action after/);
+});
