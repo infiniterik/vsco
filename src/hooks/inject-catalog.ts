@@ -1,3 +1,4 @@
+import { logDebug } from "../debug.js";
 import { renderPreamble } from "../format.js";
 import { readStdin, writeOutput } from "./io.js";
 
@@ -11,6 +12,7 @@ import { readStdin, writeOutput } from "./io.js";
  */
 async function main(): Promise<void> {
   await readStdin(); // consume the event payload; we don't need any of its fields
+  logDebug("sessionStart.invoke", {});
   writeOutput({
     continue: true,
     systemMessage: "ReAct hook active: textual tool catalog injected for a no-tool-calling model.",

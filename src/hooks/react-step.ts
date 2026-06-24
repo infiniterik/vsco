@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { logDebug, snippet } from "../debug.js";
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
 import { readLastAssistantText } from "../transcript.js";
@@ -137,11 +138,32 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
     return allowStop();
   }
 
-  if (!input.transcript_path) return allowStop();
+  if (!input.transcript_path) {
+    logDebug("stop.no_transcript_path", { sessionId });
+    return allowStop();
+  }
   const text = readLastAssistantText(input.transcript_path);
+  logDebug("stop.invoke", {
+    sessionId,
+    iter,
+    stop_hook_active: input.stop_hook_active ?? null,
+    transcript_path: input.transcript_path,
+    hasText: Boolean(text),
+    text: snippet(text),
+  });
   if (!text) return allowStop();
 
   const turn = parseAssistantTurn(text);
+  logDebug("stop.parsed", {
+    kind: turn.kind,
+    detail: snippet(
+      turn.kind === "action"
+        ? `${turn.action} ${JSON.stringify(turn.input)}`
+        : turn.kind === "final"
+          ? turn.answer
+          : turn.reason,
+    ),
+  });
 
   if (turn.kind === "final") {
     clearCounter(sessionId, "step");
@@ -183,8 +205,12 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
 }
 
 async function main(): Promise<void> {
-  const input = parseStdin<StopInput>(await readStdin());
-  writeOutput(await runStep(input));
+  const raw = await readStdin();
+  logDebug("stop.stdin", { raw: snippet(raw) });
+  const input = parseStdin<StopInput>(raw);
+  const output = await runStep(input);
+  logDebug("stop.output", { output });
+  writeOutput(output);
 }
 
 // Run main() only when invoked directly (not when imported by tests).

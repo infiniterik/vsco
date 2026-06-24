@@ -2,6 +2,8 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { renderPreamble } from "./format.js";
+
 /**
  * VS Code extension entry point.
  *
@@ -17,6 +19,7 @@ const RUNTIME_FILES = [
   "tools.js",
   "format.js",
   "transcript.js",
+  "debug.js",
   "hooks/io.js",
   "hooks/inject-catalog.js",
   "hooks/react-step.js",
@@ -119,7 +122,9 @@ function hookEntry(scriptPath: string, timeout: number) {
     type: "command",
     command: `"${exe}" "${scriptPath}"`,
     windows: `& '${exe}' '${scriptPath}'`,
-    env: { ELECTRON_RUN_AS_NODE: "1" },
+    // ELECTRON_RUN_AS_NODE: run the VS Code executable as plain Node.
+    // REACT_BYOK_DEBUG: append a diagnostic line to .react-byok/hook.log each call.
+    env: { ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_DEBUG: "1" },
     timeout,
   };
 }
@@ -130,6 +135,10 @@ async function writeText(file: string, content: string): Promise<void> {
 }
 
 function agentMarkdown(model: string): string {
+  // The body of a custom agent file is prepended to every prompt, so it is the
+  // de-facto system prompt. We put the full ReAct protocol here (the same text the
+  // SessionStart hook injects) so the model is instructed how to respond even if the
+  // injected context is summarized away.
   return `---
 name: ReAct BYOK
 description: Runs a model without native tool-calling as a ReAct agent, driven by SessionStart + Stop hooks.
@@ -137,10 +146,11 @@ model: ${model}
 tools: []
 ---
 
-This agent makes a model that cannot receive tool specifications behave like a
-ReAct agent. The hooks that drive the loop are configured in
-\`.github/hooks/react.json\`: the tool catalog is injected as text at SessionStart;
-the Stop hook parses the model's textual actions, executes them, and feeds results
-back as observations until the model emits a Final Answer.
+${renderPreamble()}
+
+---
+(The loop is driven by hooks in \`.github/hooks/react.json\`: SessionStart injects the
+catalog above; the Stop hook runs your Action and returns its Observation, repeating
+until you give a Final Answer.)
 `;
 }

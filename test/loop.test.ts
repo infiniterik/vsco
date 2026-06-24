@@ -37,6 +37,14 @@ test("preamble lists the available tool", () => {
   assert.match(renderPreamble(), /run_command/);
 });
 
+test("preamble gives strict no-native-tools instructions and a worked example", () => {
+  const p = renderPreamble();
+  assert.match(p, /do NOT have native tool-calling/i);
+  assert.match(p, /Action Input:/);
+  assert.match(p, /Final Answer:/);
+  assert.match(p, /Observation:/); // worked example shows the host's reply
+});
+
 function writeTranscript(text: string): string {
   const dir = mkdtempSync(join(tmpdir(), "react-test-"));
   const p = join(dir, "transcript.jsonl");
