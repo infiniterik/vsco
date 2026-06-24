@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { logDebug, snippet } from "../debug.js";
+import { logDebug, recordCommandOutput, snippet } from "../debug.js";
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
 import { readLastAssistantText, sampleTranscript } from "../transcript.js";
@@ -205,6 +205,7 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
   // A valid, runnable action — the model recovered, so reset the invalid streak.
   clearCounter(sessionId, "invalid");
   const result = await tool.execute(turn.input);
+  recordCommandOutput(tool.name, turn.input, result);
   return block(formatObservation(tool.name, result));
 }
 

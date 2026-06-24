@@ -52,9 +52,23 @@ npm run package    # builds (src/ -> dist/) and writes react-byok.vsix
 npm test           # parser + simulated Stop-step tests
 ```
 
+## Tools, output, and multiple agents
+
+- **Tools** are defined in `src/tools.ts` and automatically offered to every agent
+  (rendered into the injected catalog and dispatched by the Stop hook). Built in:
+  `run_command`, `arxiv_search`, `read_file`, `write_file`, `list_files`. To add a
+  tool, append one object to the `tools` array — nothing else to wire up.
+- **Tool output buffer**: each tool run is appended to `.react-byok/commands.log`,
+  which the extension tails into the **"ReAct Tools"** Output channel. Run
+  *ReAct BYOK: Show tool output* to open it.
+- **Multiple agents** share one tool runtime. Setup writes two agents under
+  `.github/agents/`: **ReAct BYOK** (general) and **ArXiv Researcher** (literature
+  reviews). Each agent file is just a task-specific prompt; they all use the same
+  `.github/hooks/react.json`. Add more agents the same way.
+
 ## Layout
 
-- `src/tools.ts` — the `run_command` tool (single source of truth).
+- `src/tools.ts` — tool definitions (single source of truth).
 - `src/format.ts` — text catalog/preamble + the action parser.
 - `src/transcript.ts` — reads the last assistant message.
 - `src/hooks/inject-catalog.ts` — `SessionStart` hook.

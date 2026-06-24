@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { get as httpsGet } from "node:https";
+import { dirname, resolve as resolvePath } from "node:path";
 
 /**
  * Single source of truth for the agent's tools.
@@ -99,7 +102,196 @@ export const runCommand: Tool = {
   },
 };
 
-export const tools: Tool[] = [runCommand];
+// --- helpers for the dependency-free tools -------------------------------------
+
+function ok(text: string): ToolResult {
+  const t = truncate(text);
+  return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
+}
+
+function fail(message: string): ToolResult {
+  return { stdout: "", stderr: message, exitCode: 1, timedOut: false, truncated: false };
+}
+
+/** Minimal HTTPS GET returning the body as text (no external dependency). */
+function httpGet(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = httpsGet(url, { headers: { "User-Agent": "react-byok/0.1" } }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        httpGet(new URL(res.headers.location, url).toString()).then(resolve, reject);
+        return;
+      }
+      if (status >= 400) {
+        res.resume();
+        reject(new Error(`HTTP ${status}`));
+        return;
+      }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (body += c));
+      res.on("end", () => resolve(body));
+    });
+    req.setTimeout(DEFAULT_TIMEOUT_MS, () => req.destroy(new Error("request timed out")));
+    req.on("error", reject);
+  });
+}
+
+function decodeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Parse arXiv Atom feed XML into readable plain text. Pure (testable) function. */
+export function parseArxiv(xml: string, query: string): string {
+  const entries = xml
+    .split("<entry>")
+    .slice(1)
+    .map((e) => e.split("</entry>")[0]);
+  if (!entries.length) return `No arXiv results for: ${query}`;
+  const tag = (block: string, name: string): string => {
+    const m = new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, "i").exec(block);
+    return m ? decodeXml(m[1]) : "";
+  };
+  const out = [`arXiv results for "${query}" (${entries.length}):`, ""];
+  entries.forEach((e, i) => {
+    const authors = [...e.matchAll(/<name[^>]*>([\s\S]*?)<\/name>/gi)]
+      .map((m) => decodeXml(m[1]))
+      .slice(0, 6)
+      .join(", ");
+    const summary = tag(e, "summary");
+    out.push(
+      `[${i + 1}] ${tag(e, "title")}`,
+      `    Published: ${tag(e, "published").slice(0, 10)}  Authors: ${authors}`,
+      `    Link: ${tag(e, "id")}`,
+      `    Abstract: ${summary.length > 500 ? `${summary.slice(0, 500)}…` : summary}`,
+      "",
+    );
+  });
+  return out.join("\n");
+}
+
+// --- additional tools ----------------------------------------------------------
+
+export const arxivSearch: Tool = {
+  name: "arxiv_search",
+  description: "Search arXiv for papers and return titles, authors, links, and abstracts.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Search terms, e.g. 'speculative decoding'." },
+      max_results: { type: "number", description: "How many results (default 6, max 25)." },
+    },
+    required: ["query"],
+  },
+  async execute(input) {
+    const query = String(input.query ?? "").trim();
+    if (!query) return fail("Provide a non-empty 'query'.");
+    const max = Math.min(Math.max(parseInt(String(input.max_results ?? 6), 10) || 6, 1), 25);
+    const url =
+      "https://export.arxiv.org/api/query?search_query=" +
+      encodeURIComponent(`all:${query}`) +
+      `&start=0&max_results=${max}&sortBy=relevance&sortOrder=descending`;
+    try {
+      return ok(parseArxiv(await httpGet(url), query));
+    } catch (err) {
+      return fail(`arXiv request failed: ${String(err)}`);
+    }
+  },
+};
+
+export const readFile: Tool = {
+  name: "read_file",
+  description: "Read a UTF-8 text file from the workspace and return its contents.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path, relative to the workspace root." },
+      max_chars: { type: "number", description: "Max characters to return (default 8000)." },
+    },
+    required: ["path"],
+  },
+  async execute(input) {
+    const p = String(input.path ?? "");
+    if (!p) return fail("Provide a 'path'.");
+    const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
+    try {
+      const t = truncate(readFileSync(resolvePath(process.cwd(), p), "utf8"), max);
+      return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
+    } catch (err) {
+      return fail(`Could not read ${p}: ${String(err)}`);
+    }
+  },
+};
+
+export const writeFile: Tool = {
+  name: "write_file",
+  description:
+    "Create or overwrite a UTF-8 text file in the workspace. Use this to actually " +
+    "create files — do not claim a file exists unless you wrote it with this tool.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path, relative to the workspace root." },
+      content: { type: "string", description: "Full file contents to write." },
+    },
+    required: ["path", "content"],
+  },
+  async execute(input) {
+    const p = String(input.path ?? "");
+    if (!p) return fail("Provide a 'path'.");
+    const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+    try {
+      const abs = resolvePath(process.cwd(), p);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+      return ok(`Wrote ${content.length} bytes to ${p}.`);
+    } catch (err) {
+      return fail(`Could not write ${p}: ${String(err)}`);
+    }
+  },
+};
+
+export const listFiles: Tool = {
+  name: "list_files",
+  description: "List files and folders in a workspace directory (non-recursive).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Directory path relative to the workspace root (default '.')." },
+    },
+    required: [],
+  },
+  async execute(input) {
+    const p = String(input.path ?? ".");
+    try {
+      const abs = resolvePath(process.cwd(), p);
+      const entries = readdirSync(abs)
+        .sort()
+        .map((name) => {
+          let isDir = false;
+          try {
+            isDir = statSync(resolvePath(abs, name)).isDirectory();
+          } catch {
+            /* ignore */
+          }
+          return isDir ? `${name}/` : name;
+        });
+      return ok(entries.length ? entries.join("\n") : "(empty directory)");
+    } catch (err) {
+      return fail(`Could not list ${p}: ${String(err)}`);
+    }
+  },
+};
+
+export const tools: Tool[] = [runCommand, arxivSearch, readFile, writeFile, listFiles];
 
 export function getTool(name: string): Tool | undefined {
   return tools.find((t) => t.name === name);

@@ -7,7 +7,41 @@ import test from "node:test";
 
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
+import { getTool, parseArxiv } from "../src/tools.js";
 import { readLastAssistantText } from "../src/transcript.js";
+
+test("write_file then read_file round-trips, and list_files sees it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "react-tools-"));
+  const prev = process.cwd();
+  process.chdir(dir);
+  try {
+    const w = await getTool("write_file")!.execute({ path: "sub/hello.txt", content: "hi there" });
+    assert.equal(w.exitCode, 0);
+    const r = await getTool("read_file")!.execute({ path: "sub/hello.txt" });
+    assert.match(r.stdout, /hi there/);
+    const l = await getTool("list_files")!.execute({ path: "sub" });
+    assert.match(l.stdout, /hello\.txt/);
+  } finally {
+    process.chdir(prev);
+  }
+});
+
+test("arxiv parser turns Atom XML into readable text", () => {
+  const xml = `<feed><entry><title>A Great Paper</title><published>2025-01-02T00:00:00Z</published>`
+    + `<id>http://arxiv.org/abs/1234.5678</id><author><name>Ada Lovelace</name></author>`
+    + `<summary>We did something.</summary></entry></feed>`;
+  const out = parseArxiv(xml, "test");
+  assert.match(out, /A Great Paper/);
+  assert.match(out, /Ada Lovelace/);
+  assert.match(out, /1234\.5678/);
+});
+
+test("preamble advertises the new tools", () => {
+  const p = renderPreamble();
+  for (const name of ["run_command", "arxiv_search", "read_file", "write_file", "list_files"]) {
+    assert.match(p, new RegExp(name));
+  }
+});
 
 test("reads the last assistant.message from a real Copilot transcript", () => {
   // Real schema captured from VS Code / Copilot agent (GitHub.copilot-chat transcript).
