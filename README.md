@@ -33,10 +33,16 @@ This is packaged as a VS Code extension that bundles the hook runtime.
 2. Open the workspace you want to use it in.
 3. Command Palette → **ReAct BYOK: Set up in this workspace**, and enter your model id.
    This copies the self-contained runtime into `.react-byok/` and writes
-   `.github/hooks/react.json` + `.github/agents/react-byok.agent.md` (all relative
-   paths — committable, no `npm install` needed in the target project).
+   `.github/hooks/react.json` + `.github/agents/react-byok.agent.md`.
 4. Enable the `chat.useCustomAgentHooks` setting (hooks are a Preview feature).
 5. Select the **ReAct BYOK** agent in chat.
+
+> **No Node.js install required.** The generated hooks run the bundled scripts with
+> the Node runtime that ships inside VS Code itself (`process.execPath` +
+> `ELECTRON_RUN_AS_NODE=1`), so this works on machines with no developer setup. The
+> setup command bakes the path to your VS Code executable into
+> `.github/hooks/react.json`, so **re-run the setup command after moving the project
+> to another machine or upgrading VS Code** if the path changes.
 
 ### Build the VSIX yourself
 

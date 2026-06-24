@@ -57,14 +57,19 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
       await fs.copyFile(from, to);
     }
 
-    // 2. Hook configuration — relative commands, committable, no deps to install.
+    // 2. Hook configuration. Run the scripts with the Node runtime that VS Code
+    //    already ships (process.execPath) rather than a system `node`, so this works
+    //    on machines with no Node/dev setup installed. ELECTRON_RUN_AS_NODE makes the
+    //    VS Code executable behave as plain Node instead of launching the UI.
+    const injectCmd = nodeCommand(path.join(root, ".react-byok", "hooks", "inject-catalog.js"));
+    const stepCmd = nodeCommand(path.join(root, ".react-byok", "hooks", "react-step.js"));
     const hooks = {
       hooks: {
         SessionStart: [
-          { type: "command", command: "node ./.react-byok/hooks/inject-catalog.js", timeout: 15 },
+          { type: "command", command: injectCmd, env: { ELECTRON_RUN_AS_NODE: "1" }, timeout: 15 },
         ],
         Stop: [
-          { type: "command", command: "node ./.react-byok/hooks/react-step.js", timeout: 60 },
+          { type: "command", command: stepCmd, env: { ELECTRON_RUN_AS_NODE: "1" }, timeout: 60 },
         ],
       },
     };
@@ -73,14 +78,16 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
       `${JSON.stringify(hooks, null, 2)}\n`,
     );
 
-    // 3. Custom agent definition.
+    // 3. Custom agent definition. The hooks live in .github/hooks/react.json above
+    //    (workspace-scoped); the agent only needs to select the no-tool model. Declaring
+    //    the same hooks here too would double-fire them.
     await writeText(
       path.join(root, ".github", "agents", "react-byok.agent.md"),
       agentMarkdown(model),
     );
 
     const choice = await vscode.window.showInformationMessage(
-      'ReAct BYOK is set up. Enable "chat.useCustomAgentHooks", then pick the “ReAct BYOK” agent.',
+      'ReAct BYOK is set up (using VS Code’s bundled Node — no Node install needed). Enable "chat.useCustomAgentHooks", then pick the “ReAct BYOK” agent.',
       "Open setting",
     );
     if (choice === "Open setting") {
@@ -94,6 +101,17 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
   }
 }
 
+/**
+ * Build a hook command that runs `scriptPath` with VS Code's own Node runtime.
+ * `process.execPath` is the VS Code/Electron executable; paired with
+ * ELECTRON_RUN_AS_NODE=1 (set in the hook's env) it runs as plain Node, so no
+ * separate Node installation is required. Both paths are absolute and quoted to
+ * tolerate spaces (e.g. "C:\\Program Files\\...").
+ */
+function nodeCommand(scriptPath: string): string {
+  return `"${process.execPath}" "${scriptPath}"`;
+}
+
 async function writeText(file: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, content, "utf8");
@@ -105,20 +123,12 @@ name: ReAct BYOK
 description: Runs a model without native tool-calling as a ReAct agent, driven by SessionStart + Stop hooks.
 model: ${model}
 tools: []
-hooks:
-  SessionStart:
-    - type: command
-      command: node ./.react-byok/hooks/inject-catalog.js
-      timeout: 15
-  Stop:
-    - type: command
-      command: node ./.react-byok/hooks/react-step.js
-      timeout: 60
 ---
 
 This agent makes a model that cannot receive tool specifications behave like a
-ReAct agent. The tool catalog is injected as text at SessionStart; the Stop hook
-parses the model's textual actions, executes them, and feeds results back as
-observations until the model emits a Final Answer.
+ReAct agent. The hooks that drive the loop are configured in
+\`.github/hooks/react.json\`: the tool catalog is injected as text at SessionStart;
+the Stop hook parses the model's textual actions, executes them, and feeds results
+back as observations until the model emits a Final Answer.
 `;
 }
