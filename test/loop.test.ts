@@ -9,13 +9,14 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 
 import { requireApproval } from "../src/approval.js";
-import { buildInjection, estimateTokens, rankChunks } from "../src/context.js";
+import { buildInjection, estimateTokens, rankChunks, runSearch } from "../src/context.js";
 import { DEFAULT_CONTEXT_CONFIG } from "../src/docs.js";
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
 import { isWithinControlDir, resolveWithinBase } from "../src/sandbox.js";
 import {
   getTool,
+  htmlToText,
   httpGetBuffer,
   isCertError,
   parseArxiv,
@@ -48,7 +49,12 @@ before(() => {
   _origCwd = process.cwd();
   const base = mkdtempSync(join(tmpdir(), "react-base-"));
   mkdirSync(join(base, ".react-byok"), { recursive: true });
-  writeFileSync(join(base, ".react-byok", "context.json"), JSON.stringify({ approval: { requireFor: [] } }));
+  writeFileSync(
+    join(base, ".react-byok", "context.json"),
+    // maxSteps pinned low so the loop-cap test stays fast; approval disabled so runStep
+    // tests that execute run_command aren't blocked on an absent approver.
+    JSON.stringify({ maxSteps: 15, approval: { requireFor: [] } }),
+  );
   process.chdir(base);
 });
 after(() => {
@@ -415,4 +421,60 @@ test("a valid action resets the invalid-retry streak", async () => {
   const reason = blockReason(out) ?? "";
   assert.match(reason, /JSON/);
   assert.doesNotMatch(reason, /Could not parse a valid Action after/);
+});
+
+test("htmlToText strips markup, scripts, and styles into readable text", () => {
+  const html =
+    "<html><head><style>.x{color:red}</style><script>var a=1;</script></head>" +
+    "<body><h1>Title</h1><p>First &amp; second.</p><div>Line two</div></body></html>";
+  const text = htmlToText(html);
+  assert.doesNotMatch(text, /</, "no tags remain");
+  assert.doesNotMatch(text, /color:red|var a=1/, "script/style content dropped");
+  assert.match(text, /Title/);
+  assert.match(text, /First & second\./, "entities decoded");
+  assert.match(text, /Line two/);
+});
+
+test("fetch_url validates the URL scheme", async () => {
+  const ft = getTool("fetch_url");
+  assert.ok(ft, "fetch_url tool is registered");
+  assert.match((await ft.execute({ url: "ftp://example.com" })).stderr, /http:\/\/ or https:\/\//);
+  assert.match((await ft.execute({ url: "" })).stderr, /Provide a 'url'/);
+});
+
+test("fetch_url is offered in the rendered catalog so the model prefers it over scripting", () => {
+  const preamble = renderPreamble();
+  assert.match(preamble, /fetch_url/);
+});
+
+test("search_docs result limit (runSearch maxResults) caps the number of passages", () => {
+  const docs = Array.from({ length: 6 }, (_, i) => {
+    const text = `parallel agent orchestration passage ${i} `.repeat(40);
+    return { label: `doc${i}.txt`, text, tokens: estimateTokens(text) };
+  });
+  const all = runSearch(docs, "parallel agent orchestration", 50_000);
+  const limited = runSearch(docs, "parallel agent orchestration", 50_000, 2);
+  assert.match(limited, /Top 2 passage/);
+  assert.ok((all.match(/@ \d+/g) ?? []).length > 2, "unlimited returns more than the cap");
+  assert.equal((limited.match(/@ \d+/g) ?? []).length, 2, "limited returns exactly the cap");
+});
+
+test("maxSteps in context.json sets the loop cap live", async () => {
+  await inWorkspace(async (ws) => {
+    mkdirSync(join(ws, ".react-byok"), { recursive: true });
+    writeFileSync(
+      join(ws, ".react-byok", "context.json"),
+      JSON.stringify({ maxSteps: 3, approval: { requireFor: [] } }),
+    );
+    const tp = writeTranscript('Action: run_command\nAction Input: {"cmd":"echo x"}');
+    const session = randomUUID();
+    const outs: Awaited<ReturnType<typeof runStep>>[] = [];
+    for (let i = 0; i < 5; i++) outs.push(await runStep({ transcript_path: tp, session_id: session }));
+    // The cap is 3, so the "maximum of 3 steps" nudge fires (and references 3, not the default).
+    assert.ok(
+      outs.some((o) => /maximum of 3 steps/.test(blockReason(o) ?? "")),
+      "expected the configured cap of 3 to be honored",
+    );
+    assert.deepEqual(outs.at(-1), { continue: true });
+  });
 });

@@ -341,10 +341,12 @@ the start of each session — check the "Local document context" manifest above.
 2. Use \`search_docs\` {query} to pull the most relevant passages from the gathered corpus in
    one call; \`read_doc\` {path} to read a full document — including a downloaded paper, e.g.
    \`read_doc {"path":"papers/2506.06962v3.pdf"}\` (see \`papers/notes.md\` for paths).
-3. Synthesize across the local corpus and the downloaded arXiv papers. Keep running notes in
+3. For non-arXiv web sources (author pages, project sites, HTTP APIs) use \`fetch_url\`
+   {url} — do not write Python/curl scripts to scrape the web.
+4. Synthesize across the local corpus and the downloaded arXiv papers. Keep running notes in
    \`NOTES.md\` via \`write_file\` so progress survives context compaction; \`read_file\` them
    back if the conversation is compacted.
-4. Save a Markdown review with \`write_file\` (e.g. \`REVIEW.md\`): Overview, Key papers
+5. Save a Markdown review with \`write_file\` (e.g. \`REVIEW.md\`): Overview, Key papers
    (Title — Authors, year — link), Themes, Gaps. Cite only papers you actually read or that
    \`arxiv_search\` returned.
 Finish with a \`Final Answer:\` summarizing findings and where you saved the review.

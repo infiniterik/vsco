@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { get as plainHttpGet } from "node:http";
 import { get as httpsGet, type RequestOptions } from "node:https";
 import { dirname, extname, join, resolve as resolvePath } from "node:path";
 
@@ -132,14 +133,19 @@ interface GetOpts {
   allowInsecure?: boolean;
 }
 
-/** One HTTPS GET; `rejectUnauthorized` toggles TLS verification. Collects body bytes. */
+/** One HTTP(S) GET; `rejectUnauthorized` toggles TLS verification. Collects body bytes. */
 function rawGet(url: string, rejectUnauthorized: boolean): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const isHttps = new URL(url).protocol === "https:";
+    const getFn = isHttps ? httpsGet : plainHttpGet;
     const opts: RequestOptions = {
-      headers: { "User-Agent": "react-byok/0.1" },
-      rejectUnauthorized,
+      // A browser-like UA: some sites reject default/script agents (the agent hit this
+      // when scraping with a bare urllib UA).
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; react-byok/0.1)" },
+      // rejectUnauthorized only applies to TLS; harmless on plain http.
+      ...(isHttps ? { rejectUnauthorized } : {}),
     };
-    const req = httpsGet(url, opts, (res) => {
+    const req = getFn(url, opts, (res) => {
       const status = res.statusCode ?? 0;
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
@@ -274,7 +280,14 @@ export const arxivSearch: Tool = {
     try {
       xml = await httpGet(url, { allowInsecure: cfg.allowInsecureTls });
     } catch (err) {
-      return fail(`arXiv request failed: ${String(err)}`);
+      const hint =
+        isCertError(err) && !cfg.allowInsecureTls
+          ? ' Set "allowInsecureTls": true in .react-byok/context.json to retry without TLS verification.'
+          : "";
+      return fail(
+        `arXiv request failed: ${String(err)}.${hint} ` +
+          "Do NOT reimplement this in Python; if arXiv is unreachable, continue with the local documents and say so.",
+      );
     }
     const entries = parseArxivEntries(xml);
     const summary = await downloadAndNote(entries, cfg);
@@ -407,17 +420,22 @@ export const searchDocs: Tool = {
     type: "object",
     properties: {
       query: { type: "string", description: "What to look for, e.g. 'evaluation metrics'." },
+      max_results: {
+        type: "number",
+        description: "Max passages to return (default 8, max 30). Raise it to pull more quotes in one call.",
+      },
     },
     required: ["query"],
   },
   async execute(input) {
     const query = String(input.query ?? "").trim();
     if (!query) return fail("Provide a non-empty 'query'.");
+    const max = Math.min(Math.max(parseInt(String(input.max_results ?? 8), 10) || 8, 1), 30);
     try {
       const cfg = loadContextConfig();
       const docs = await gatherDocuments(cfg);
       if (!docs.length) return ok(`No local documents found under '${cfg.dir}'.`);
-      return ok(runSearch(docs, query, cfg.searchBudgetTokens));
+      return ok(runSearch(docs, query, cfg.searchBudgetTokens, max));
     } catch (err) {
       return fail(`search_docs failed: ${String(err)}`);
     }
@@ -497,8 +515,70 @@ export const listFiles: Tool = {
   },
 };
 
+/** Reduce an HTML document to readable plain text (drops scripts/styles/markup). */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<\/(p|div|h[1-6]|li|tr|section|article|header|footer)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, " ")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l, i, a) => l || (i > 0 && a[i - 1])) // collapse runs of blank lines
+    .join("\n")
+    .trim();
+}
+
+export const fetchUrl: Tool = {
+  name: "fetch_url",
+  description:
+    "Fetch an http(s) URL and return the response body. Use this for web pages and HTTP " +
+    "APIs instead of writing a script. HTML is reduced to readable text by default; set " +
+    "as_text=false for raw JSON/XML/HTML. Retries without TLS verification on cert errors.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "The http:// or https:// URL to fetch." },
+      as_text: {
+        type: "boolean",
+        description: "Strip HTML to readable text (default true). Set false for raw JSON/XML/HTML.",
+      },
+      max_chars: { type: "number", description: "Max characters to return (default 8000)." },
+    },
+    required: ["url"],
+  },
+  async execute(input) {
+    const url = String(input.url ?? "").trim();
+    if (!url) return fail("Provide a 'url'.");
+    if (!/^https?:\/\//i.test(url)) return fail("URL must start with http:// or https://.");
+    const asText = input.as_text === undefined ? true : Boolean(input.as_text);
+    const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
+    const cfg = loadContextConfig();
+    let body: string;
+    try {
+      body = (await httpGetBuffer(url, { allowInsecure: cfg.allowInsecureTls })).toString("utf8");
+    } catch (err) {
+      return fail(`fetch_url failed for ${url}: ${String(err)}`);
+    }
+    const looksHtml = /<html|<!doctype html|<body|<head|<div|<p[\s>]/i.test(body);
+    const out = asText && looksHtml ? htmlToText(body) : body;
+    const t = truncate(out, max);
+    return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
+  },
+};
+
 export const tools: Tool[] = [
   runCommand,
+  fetchUrl,
   arxivSearch,
   searchDocs,
   readDoc,

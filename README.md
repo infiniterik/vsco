@@ -56,9 +56,14 @@ npm test           # parser + simulated Stop-step tests
 
 - **Tools** are defined in `src/tools.ts` and automatically offered to every agent
   (rendered into the injected catalog and dispatched by the Stop hook). Built in:
-  `run_command`, `arxiv_search`, `search_docs`, `read_doc`, `read_file`, `write_file`,
-  `list_files`. To add a tool, append one object to the `tools` array — nothing else
-  to wire up.
+  `run_command`, `fetch_url`, `arxiv_search`, `search_docs`, `read_doc`, `read_file`,
+  `write_file`, `list_files`. To add a tool, append one object to the `tools` array —
+  nothing else to wire up. The preamble steers the model to these dedicated tools over
+  ad-hoc `run_command` scripts (`fetch_url` for web pages/APIs, `search_docs`/`read_doc`
+  for local PDFs), so a no-tool model stops reimplementing them in Python.
+- **`fetch_url`** does an HTTP(S) GET (HTML reduced to readable text by default; raw with
+  `as_text:false`) and shares the arXiv cert fallback — so non-arXiv web sources don't
+  require a scraping script.
 - **Document context**: documents in a configured folder (default `docs/`, including
   PDFs) are gathered automatically at session start — a budgeted manifest plus the full
   text of as many as fit `budgetTokens` (in `.react-byok/context.json`), the rest as
@@ -77,6 +82,9 @@ npm test           # parser + simulated Stop-step tests
   fail-safe is **deny** (timeout or no extension). Configure via `approval` in
   `.react-byok/context.json` — e.g. add regexes to `allowCommands` to auto-approve safe
   commands, or change `requireFor`.
+- **Step budget**: the ReAct loop caps tool steps per session (`maxSteps` in
+  `.react-byok/context.json`, default 40). It is **read live on every Stop**, so editing
+  the value applies on the next step — raise it mid-run for a long task, no reload needed.
 - **Multiple agents** share one tool runtime and are **bundled in the VSIX**, auto-
   deployed to `.github/agents/` on install/reload: **ReAct BYOK** (general) and
   **ArXiv Researcher** (literature reviews over local papers + arXiv). Each agent file

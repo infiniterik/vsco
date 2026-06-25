@@ -19,6 +19,12 @@ export interface ContextConfig {
   allowInsecureTls: boolean;
   /** Folder (relative to workspace root) where arxiv_search saves PDFs + notes. */
   arxivDir: string;
+  /**
+   * Max ReAct steps (tool executions) per session before the loop forces a Final
+   * Answer. Read live on every Stop, so editing it in context.json changes the cap
+   * immediately — even mid-session.
+   */
+  maxSteps: number;
   /** User-authorization policy for state-changing tool executions. */
   approval: ApprovalConfig;
 }
@@ -34,6 +40,7 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   maxFileBytes: 5_000_000,
   allowInsecureTls: true,
   arxivDir: "papers",
+  maxSteps: 40,
   approval: DEFAULT_APPROVAL,
 };
 

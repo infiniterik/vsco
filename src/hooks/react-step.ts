@@ -27,7 +27,9 @@ import { parseStdin, protectStdout, readStdin, writeOutput } from "./io.js";
  * forever.
  */
 
-const MAX_ITERATIONS = 15;
+// Fallback step cap if context.json has no `maxSteps`. The effective cap is read
+// live from config on every Stop (see runStep), so it can be raised mid-session.
+const DEFAULT_MAX_ITERATIONS = 40;
 // Consecutive malformed actions to tolerate (with escalating guidance) before
 // giving up and asking for a Final Answer. Reset whenever a valid step occurs.
 const MAX_INVALID_RETRIES = 3;
@@ -125,18 +127,22 @@ function formatObservation(toolName: string, r: ToolResult): string {
 
 export async function runStep(input: StopInput): Promise<StopOutput> {
   const sessionId = input.session_id ?? "default";
+  // Config is read live each Stop, so editing context.json (e.g. maxSteps) applies
+  // on the very next step — no reload, no rebuild.
+  const cfg = loadContextConfig();
+  const maxIterations = Math.max(1, Math.floor(cfg.maxSteps) || DEFAULT_MAX_ITERATIONS);
 
   // Safety valve: bound the number of automated continuations. Give exactly one
   // nudge to finalize, then force the session to end so the loop always terminates.
   // (The counter is intentionally NOT reset here, so the terminal state is stable.)
   const iter = bumpCounter(sessionId, "step");
-  if (iter === MAX_ITERATIONS + 1) {
+  if (iter === maxIterations + 1) {
     return block(
-      `ReAct loop reached the maximum of ${MAX_ITERATIONS} steps. ` +
+      `ReAct loop reached the maximum of ${maxIterations} steps. ` +
         'Stop using tools and respond now with a line starting "Final Answer:".',
     );
   }
-  if (iter > MAX_ITERATIONS + 1) {
+  if (iter > maxIterations + 1) {
     return allowStop();
   }
 
@@ -208,7 +214,6 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
   clearCounter(sessionId, "invalid");
 
   // Guardrail: state-changing executions must be authorized by the user.
-  const cfg = loadContextConfig();
   if (cfg.approval.requireFor.includes(tool.name)) {
     const command = tool.name === "run_command" ? String(turn.input.cmd ?? "") : undefined;
     const summary = approvalSummary(tool.name, turn.input);

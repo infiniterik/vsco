@@ -130,9 +130,15 @@ export function buildInjection(docs: GatheredDoc[], cfg: ContextConfig): string 
 }
 
 /** Format a query-aware search across the gathered documents. */
-export function runSearch(docs: GatheredDoc[], query: string, budgetTokens: number): string {
+export function runSearch(
+  docs: GatheredDoc[],
+  query: string,
+  budgetTokens: number,
+  maxResults = 0,
+): string {
   const chunks = docs.flatMap((d) => chunkText(d.label, d.text));
-  const top = rankChunks(query, chunks, budgetTokens);
+  const ranked = rankChunks(query, chunks, budgetTokens);
+  const top = maxResults > 0 ? ranked.slice(0, maxResults) : ranked;
   if (!top.length) return `No passages matched "${query}" in the ${docs.length} local document(s).`;
   const body = top
     .map((c) => `[${c.label} @ ${c.offset}]\n${c.text.replace(/\s+/g, " ").trim()}`)

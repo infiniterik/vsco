@@ -60,6 +60,11 @@ Final Answer: <your complete answer to the user>
    Read it, then either take another Action or give your Final Answer.
 5. If you already know the answer and need no tool, reply with shape (b) only.
 6. Never put both an Action and a Final Answer in the same reply.
+7. PREFER the dedicated tools over scripting. To fetch a web page/API use \`fetch_url\`
+   (not a python/curl script via run_command); for arXiv use \`arxiv_search\`; to read
+   local docs/PDFs use \`search_docs\`/\`read_doc\`. Only fall back to \`run_command\` when
+   no dedicated tool fits. Each tool runs in its own step — you are not penalized for
+   taking several steps, so do NOT cram a whole workflow into one run_command script.
 
 # Worked example
 User: How many TypeScript files are in src?
