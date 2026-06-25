@@ -7,3 +7,6 @@ examples/lit-review/REVIEW.md
 
 # packaged extension artifact
 *.vsix
+
+# local runtime / hook artifacts
+.react-byok/

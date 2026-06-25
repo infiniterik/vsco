@@ -1,14 +1,67 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { buildInjection, estimateTokens, rankChunks } from "../src/context.js";
+import { DEFAULT_CONTEXT_CONFIG } from "../src/docs.js";
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
 import { getTool, parseArxiv } from "../src/tools.js";
 import { readLastAssistantText } from "../src/transcript.js";
+
+test("estimateTokens approximates length/4", () => {
+  assert.equal(estimateTokens("abcd"), 1);
+  assert.equal(estimateTokens("a".repeat(40)), 10);
+});
+
+test("rankChunks puts the most relevant chunk first", () => {
+  const chunks = [
+    { label: "a", offset: 0, text: "the cat sat on the mat" },
+    { label: "b", offset: 0, text: "entanglement and superposition in physics" },
+    { label: "c", offset: 0, text: "quantum computing uses quantum bits called qubits" },
+  ];
+  const top = rankChunks("quantum qubits", chunks, 10_000);
+  assert.equal(top[0]?.label, "c");
+});
+
+test("buildInjection lists every doc, tags FULL/PREVIEW, and respects the budget", () => {
+  const docs = [
+    { label: "small.md", text: "x".repeat(400), tokens: estimateTokens("x".repeat(400)) },
+    { label: "big.md", text: "y".repeat(40_000), tokens: estimateTokens("y".repeat(40_000)) },
+  ];
+  const cfg = { ...DEFAULT_CONTEXT_CONFIG, budgetTokens: 2_000, previewChars: 50 };
+  const out = buildInjection(docs, cfg);
+  assert.match(out, /small\.md/);
+  assert.match(out, /big\.md/);
+  assert.match(out, /\[FULL\]/);
+  assert.match(out, /\[PREVIEW\]/);
+  assert.ok(estimateTokens(out) <= cfg.budgetTokens + 600);
+});
+
+test("search_docs returns relevant passages from the local corpus", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "react-ws-"));
+  const prev = process.cwd();
+  process.chdir(ws);
+  try {
+    mkdirSync(join(ws, ".react-byok"), { recursive: true });
+    writeFileSync(
+      join(ws, ".react-byok", "context.json"),
+      JSON.stringify({ ...DEFAULT_CONTEXT_CONFIG, dir: "papers" }),
+    );
+    mkdirSync(join(ws, "papers"), { recursive: true });
+    writeFileSync(join(ws, "papers", "a.md"), "Transformers use self-attention. Attention is all you need.");
+    writeFileSync(join(ws, "papers", "b.md"), "Bananas are a yellow tropical fruit, unrelated to ML.");
+    const out = await getTool("search_docs")!.execute({ query: "self-attention transformers" });
+    assert.equal(out.exitCode, 0);
+    assert.match(out.stdout, /a\.md/);
+    assert.match(out.stdout, /attention/i);
+  } finally {
+    process.chdir(prev);
+  }
+});
 
 test("write_file then read_file round-trips, and list_files sees it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "react-tools-"));

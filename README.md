@@ -56,15 +56,23 @@ npm test           # parser + simulated Stop-step tests
 
 - **Tools** are defined in `src/tools.ts` and automatically offered to every agent
   (rendered into the injected catalog and dispatched by the Stop hook). Built in:
-  `run_command`, `arxiv_search`, `read_file`, `write_file`, `list_files`. To add a
-  tool, append one object to the `tools` array — nothing else to wire up.
+  `run_command`, `arxiv_search`, `search_docs`, `read_doc`, `read_file`, `write_file`,
+  `list_files`. To add a tool, append one object to the `tools` array — nothing else
+  to wire up.
+- **Document context**: documents in a configured folder (default `docs/`, including
+  PDFs) are gathered automatically at session start — a budgeted manifest plus the full
+  text of as many as fit `budgetTokens` (in `.react-byok/context.json`), the rest as
+  previews. The agent then uses `search_docs` {query} for one-call ranked retrieval
+  across the whole corpus, or `read_doc` {path} for a full document. PDF text is
+  extracted offline via a bundled pdf.js (no external tools). Run *ReAct BYOK: Re-gather
+  document context* after adding files to refresh the cache.
 - **Tool output buffer**: each tool run is appended to `.react-byok/commands.log`,
   which the extension tails into the **"ReAct Tools"** Output channel. Run
   *ReAct BYOK: Show tool output* to open it.
-- **Multiple agents** share one tool runtime. Setup writes two agents under
-  `.github/agents/`: **ReAct BYOK** (general) and **ArXiv Researcher** (literature
-  reviews). Each agent file is just a task-specific prompt; they all use the same
-  `.github/hooks/react.json`. Add more agents the same way.
+- **Multiple agents** share one tool runtime and are **bundled in the VSIX**, auto-
+  deployed to `.github/agents/` on install/reload: **ReAct BYOK** (general) and
+  **ArXiv Researcher** (literature reviews over local papers + arXiv). Each agent file
+  is just a task-specific prompt; add more via the `AGENTS` list in `src/extension.ts`.
 
 ## Layout
 

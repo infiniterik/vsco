@@ -2,7 +2,10 @@ import { promises as fs, readFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { DEFAULT_CONTEXT_CONFIG } from "./docs.js";
 import { renderPreamble } from "./format.js";
+
+const DEFAULT_MODEL = "ollama/llama3.1";
 
 /**
  * VS Code extension entry point.
@@ -15,24 +18,27 @@ import { renderPreamble } from "./format.js";
  * no `npm install` in the target project.
  */
 
+// The bundled (esbuild) hook runtimes — self-contained, so they're the only files
+// copied into the workspace; pdf.js and all logic are bundled inside them.
 const RUNTIME_FILES = [
-  "tools.js",
-  "format.js",
-  "transcript.js",
-  "debug.js",
-  "hooks/io.js",
   "hooks/inject-catalog.js",
   "hooks/react-step.js",
+  "hooks/pre-compact.js",
+  "hooks/pdf.worker.mjs",
 ];
 
 export function activate(context: vscode.ExtensionContext): void {
+  const version = String(context.extension.packageJSON.version ?? "0.0.0");
   context.subscriptions.push(
     vscode.commands.registerCommand("react-byok.setup", () => setupWorkspace(context)),
-  );
-  context.subscriptions.push(
     vscode.commands.registerCommand("react-byok.showOutput", () => reactOutput().show(true)),
+    vscode.commands.registerCommand("react-byok.regatherContext", regatherContext),
   );
   watchCommandOutput(context);
+  // Make the bundled agents appear on install/reload without running setup.
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    void writeAgents(folder.uri.fsPath, version).catch(() => undefined);
+  }
 }
 
 export function deactivate(): void {
@@ -80,6 +86,31 @@ function watchCommandOutput(context: vscode.ExtensionContext): void {
   flush(); // surface anything already there
 }
 
+/** Clear the document-extraction cache so the next session re-reads all documents. */
+async function regatherContext(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showErrorMessage("ReAct BYOK: open a folder first.");
+    return;
+  }
+  await fs.rm(path.join(folder.uri.fsPath, ".react-byok", ".cache"), {
+    recursive: true,
+    force: true,
+  });
+  void vscode.window.showInformationMessage(
+    "ReAct BYOK: document cache cleared — context will be re-gathered next session.",
+  );
+}
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
@@ -87,14 +118,15 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const root = folder.uri.fsPath;
+  const version = String(context.extension.packageJSON.version ?? "0.0.0");
 
   const model =
     (await vscode.window.showInputBox({
       title: "ReAct BYOK — model id",
       prompt: "A BYOK/local model WITHOUT native tool-calling (e.g. ollama/llama3.1).",
-      value: "ollama/llama3.1",
+      value: DEFAULT_MODEL,
       ignoreFocusOut: true,
-    })) ?? "ollama/llama3.1";
+    })) ?? DEFAULT_MODEL;
 
   try {
     // 1. Copy the self-contained hook runtime into the workspace.
@@ -108,15 +140,14 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     // 2. Hook configuration. Run the scripts with the Node runtime that VS Code
     //    already ships (process.execPath) rather than a system `node`, so this works
     //    on machines with no Node/dev setup installed. ELECTRON_RUN_AS_NODE makes the
-    //    VS Code executable behave as plain Node instead of launching the UI.
+    //    VS Code executable behave as plain Node instead of launching the UI. Generous
+    //    timeouts: SessionStart/Stop may extract PDFs for context gathering.
+    const hookScript = (name: string): string => path.join(root, ".react-byok", "hooks", name);
     const hooks = {
       hooks: {
-        SessionStart: [
-          hookEntry(path.join(root, ".react-byok", "hooks", "inject-catalog.js"), 15),
-        ],
-        Stop: [
-          hookEntry(path.join(root, ".react-byok", "hooks", "react-step.js"), 60),
-        ],
+        SessionStart: [hookEntry(hookScript("inject-catalog.js"), 60)],
+        Stop: [hookEntry(hookScript("react-step.js"), 120)],
+        PreCompact: [hookEntry(hookScript("pre-compact.js"), 15)],
       },
     };
     await writeText(
@@ -124,18 +155,15 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
       `${JSON.stringify(hooks, null, 2)}\n`,
     );
 
-    // 3. Custom agent definitions. The hooks live in .github/hooks/react.json above
-    //    (workspace-scoped), so every agent shares the same tool runtime; each agent
-    //    file just supplies a task-specific prompt. Declaring hooks in the agent
-    //    frontmatter too would double-fire them.
-    await writeText(
-      path.join(root, ".github", "agents", "react-byok.agent.md"),
-      agentMarkdown(model),
-    );
-    await writeText(
-      path.join(root, ".github", "agents", "arxiv-researcher.agent.md"),
-      arxivAgentMarkdown(model),
-    );
+    // 3. Document-context config + docs folder (created if missing).
+    const ctxPath = path.join(root, ".react-byok", "context.json");
+    if (!(await exists(ctxPath))) {
+      await writeText(ctxPath, `${JSON.stringify(DEFAULT_CONTEXT_CONFIG, null, 2)}\n`);
+    }
+    await fs.mkdir(path.join(root, DEFAULT_CONTEXT_CONFIG.dir), { recursive: true });
+
+    // 4. Custom agent definitions (shared tool runtime; per-agent task prompt).
+    await writeAgents(root, version, model);
 
     const choice = await vscode.window.showInformationMessage(
       'ReAct BYOK is set up (using VS Code’s bundled Node — no Node install needed). Enable "chat.useCustomAgentHooks", then pick the “ReAct BYOK” agent.',
@@ -184,18 +212,63 @@ async function writeText(file: string, content: string): Promise<void> {
   await fs.writeFile(file, content, "utf8");
 }
 
-function agentMarkdown(model: string): string {
+// --- bundled agents ------------------------------------------------------------
+
+/** Every agent shipped in the VSIX. Add an entry to ship + auto-install a new one. */
+const AGENTS: { file: string; build: (model: string, version: string) => string }[] = [
+  { file: "react-byok.agent.md", build: agentMarkdown },
+  { file: "arxiv-researcher.agent.md", build: arxivAgentMarkdown },
+];
+
+function stampOf(md: string): string | undefined {
+  return /react-byok:\s*v?([\d.]+)/.exec(md)?.[1];
+}
+function modelOf(md: string): string | undefined {
+  return /^model:\s*(.+)$/m.exec(md)?.[1]?.trim();
+}
+
+/**
+ * Write the bundled agent files into `.github/agents/`. With `modelOverride` (setup),
+ * always (re)writes with that model. Without it (activation), creates missing files
+ * and refreshes ones stamped with an older version, preserving the user's model.
+ */
+async function writeAgents(root: string, version: string, modelOverride?: string): Promise<void> {
+  for (const a of AGENTS) {
+    const dest = path.join(root, ".github", "agents", a.file);
+    let existing = "";
+    try {
+      existing = await fs.readFile(dest, "utf8");
+    } catch {
+      /* missing */
+    }
+    const model = modelOverride ?? modelOf(existing) ?? DEFAULT_MODEL;
+    if (modelOverride || !existing || stampOf(existing) !== version) {
+      await writeText(dest, a.build(model, version));
+    }
+  }
+}
+
+function agentFrontmatter(name: string, description: string, model: string, version: string): string {
   // The body of a custom agent file is prepended to every prompt, so it is the
-  // de-facto system prompt. We put the full ReAct protocol here (the same text the
-  // SessionStart hook injects) so the model is instructed how to respond even if the
-  // injected context is summarized away.
+  // de-facto system prompt. The leading comment is a version stamp used by writeAgents.
   return `---
-name: ReAct BYOK
-description: Runs a model without native tool-calling as a ReAct agent, driven by SessionStart + Stop hooks.
+name: ${name}
+description: ${description}
 model: ${model}
 tools: []
 ---
 
+<!-- react-byok: v${version} -->
+`;
+}
+
+function agentMarkdown(model: string, version: string): string {
+  return `${agentFrontmatter(
+    "ReAct BYOK",
+    "Runs a model without native tool-calling as a ReAct agent, driven by SessionStart + Stop hooks.",
+    model,
+    version,
+  )}
 ${renderPreamble()}
 
 ---
@@ -205,26 +278,27 @@ until you give a Final Answer.)
 `;
 }
 
-function arxivAgentMarkdown(model: string): string {
-  // A second agent that shares the same hooks/tools but with a literature-review
-  // task prompt — demonstrates how to add more agents on top of one tool runtime.
-  return `---
-name: ArXiv Researcher
-description: Literature-review agent — searches arXiv and writes a review, via the ReAct hook tools.
-model: ${model}
-tools: []
----
-
+function arxivAgentMarkdown(model: string, version: string): string {
+  return `${agentFrontmatter(
+    "ArXiv Researcher",
+    "Literature-review agent — reads local papers and arXiv via the ReAct hook tools.",
+    model,
+    version,
+  )}
 ${renderPreamble()}
 
 # Your task: literature reviews
-Use the tools above to research a topic and produce a written review:
-1. \`arxiv_search\` for the topic (and refined sub-queries) to find relevant papers.
-2. \`read_file\` to read any local notes or source files the user points you to.
-3. Synthesize findings, then \`write_file\` to save a Markdown review (e.g. \`REVIEW.md\`)
-   with sections: Overview, Key papers (Title — Authors, year — link), Themes, and Gaps.
-4. Cite only papers that \`arxiv_search\` actually returned; never invent citations.
-Finish with a \`Final Answer:\` summarizing what you found and where you saved the review.
+Local documents (PDFs/notes in the configured folder) are gathered into your context at
+the start of each session — check the "Local document context" manifest above. Then:
+1. Use \`search_docs\` {query} to pull the most relevant passages from ALL local documents
+   in one call; use \`read_doc\` {path} for a full document. Use \`arxiv_search\` to find
+   related published work.
+2. Synthesize across the local corpus and arXiv.
+3. Save a Markdown review with \`write_file\` (e.g. \`REVIEW.md\`): Overview, Key papers
+   (Title — Authors, year — link), Themes, Gaps. Write incrementally so progress survives
+   context compaction; \`read_file\` your notes back if the conversation is compacted.
+4. Cite only documents/papers you actually read or that \`arxiv_search\` returned.
+Finish with a \`Final Answer:\` summarizing findings and where you saved the review.
 
 ---
 (Tools and the loop are provided by the shared hooks in \`.github/hooks/react.json\`.)

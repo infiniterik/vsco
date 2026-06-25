@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { get as httpsGet } from "node:https";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname, extname, resolve as resolvePath } from "node:path";
+
+import { runSearch } from "./context.js";
+import { extractText, gatherDocuments, loadContextConfig } from "./docs.js";
 
 /**
  * Single source of truth for the agent's tools.
@@ -223,10 +226,67 @@ export const readFile: Tool = {
     if (!p) return fail("Provide a 'path'.");
     const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
     try {
-      const t = truncate(readFileSync(resolvePath(process.cwd(), p), "utf8"), max);
+      // PDFs are extracted to text; everything else is read as UTF-8.
+      const raw =
+        extname(p).toLowerCase() === ".pdf"
+          ? await extractText(resolvePath(process.cwd(), p))
+          : readFileSync(resolvePath(process.cwd(), p), "utf8");
+      const t = truncate(raw, max);
       return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
     } catch (err) {
       return fail(`Could not read ${p}: ${String(err)}`);
+    }
+  },
+};
+
+export const readDoc: Tool = {
+  name: "read_doc",
+  description:
+    "Read one full document from the local corpus (text or PDF) by its manifest path. " +
+    "Prefer search_docs for finding relevant passages; use this for a whole document.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Document path (as shown in the document manifest)." },
+      max_chars: { type: "number", description: "Max characters to return (default 8000)." },
+    },
+    required: ["path"],
+  },
+  async execute(input) {
+    const p = String(input.path ?? "");
+    if (!p) return fail("Provide a 'path'.");
+    const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
+    try {
+      const t = truncate(await extractText(resolvePath(process.cwd(), p)), max);
+      return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
+    } catch (err) {
+      return fail(`Could not read ${p}: ${String(err)}`);
+    }
+  },
+};
+
+export const searchDocs: Tool = {
+  name: "search_docs",
+  description:
+    "Search ALL local documents (text and PDFs) and return the passages most relevant to " +
+    "your query, in one call. Use this instead of reading many files individually.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "What to look for, e.g. 'evaluation metrics'." },
+    },
+    required: ["query"],
+  },
+  async execute(input) {
+    const query = String(input.query ?? "").trim();
+    if (!query) return fail("Provide a non-empty 'query'.");
+    try {
+      const cfg = loadContextConfig();
+      const docs = await gatherDocuments(cfg);
+      if (!docs.length) return ok(`No local documents found under '${cfg.dir}'.`);
+      return ok(runSearch(docs, query, cfg.searchBudgetTokens));
+    } catch (err) {
+      return fail(`search_docs failed: ${String(err)}`);
     }
   },
 };
@@ -291,7 +351,15 @@ export const listFiles: Tool = {
   },
 };
 
-export const tools: Tool[] = [runCommand, arxivSearch, readFile, writeFile, listFiles];
+export const tools: Tool[] = [
+  runCommand,
+  arxivSearch,
+  searchDocs,
+  readDoc,
+  readFile,
+  writeFile,
+  listFiles,
+];
 
 export function getTool(name: string): Tool | undefined {
   return tools.find((t) => t.name === name);

@@ -5,8 +5,10 @@ test/**
 examples/**
 docs/**
 node_modules/**
+.react-byok/**
 **/*.ts
 **/*.map
+esbuild.mjs
 tsconfig.json
 .gitignore
 .editorconfig

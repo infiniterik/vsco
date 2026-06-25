@@ -6,7 +6,7 @@ import { logDebug, recordCommandOutput, snippet } from "../debug.js";
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
 import { readLastAssistantText, sampleTranscript } from "../transcript.js";
-import { parseStdin, readStdin, writeOutput } from "./io.js";
+import { parseStdin, protectStdout, readStdin, writeOutput } from "./io.js";
 
 /**
  * Stop hook — the engine of the ReAct loop.
@@ -210,6 +210,7 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
 }
 
 async function main(): Promise<void> {
+  protectStdout();
   const raw = await readStdin();
   logDebug("stop.stdin", { raw: snippet(raw) });
   const input = parseStdin<StopInput>(raw);
