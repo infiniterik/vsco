@@ -2,7 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { requireApproval } from "../approval.js";
 import { logDebug, recordCommandOutput, snippet } from "../debug.js";
+import { loadContextConfig } from "../docs.js";
 import { parseAssistantTurn } from "../format.js";
 import { getTool, tools, type ToolResult } from "../tools.js";
 import { readLastAssistantText, sampleTranscript } from "../transcript.js";
@@ -204,9 +206,36 @@ export async function runStep(input: StopInput): Promise<StopOutput> {
 
   // A valid, runnable action — the model recovered, so reset the invalid streak.
   clearCounter(sessionId, "invalid");
+
+  // Guardrail: state-changing executions must be authorized by the user.
+  const cfg = loadContextConfig();
+  if (cfg.approval.requireFor.includes(tool.name)) {
+    const command = tool.name === "run_command" ? String(turn.input.cmd ?? "") : undefined;
+    const summary = approvalSummary(tool.name, turn.input);
+    logDebug("approval.request", { tool: tool.name, summary: snippet(summary, 200) });
+    const decision = await requireApproval(sessionId, tool.name, summary, command, cfg.approval);
+    logDebug("approval.decision", { tool: tool.name, decision });
+    if (decision === "deny") {
+      return block(
+        `Execution not authorized by the user: ${summary}. ` +
+          "Do not retry the same action; choose a different approach or give your Final Answer.",
+      );
+    }
+  }
+
   const result = await tool.execute(turn.input);
   recordCommandOutput(tool.name, turn.input, result);
   return block(formatObservation(tool.name, result));
+}
+
+/** A short, human-readable description of what the model is asking to do. */
+function approvalSummary(toolName: string, input: Record<string, unknown>): string {
+  if (toolName === "run_command") return String(input.cmd ?? "");
+  if (toolName === "write_file") {
+    const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+    return `write ${String(input.path ?? "")} (${content.length} bytes)`;
+  }
+  return `${toolName} ${JSON.stringify(input)}`;
 }
 
 async function main(): Promise<void> {

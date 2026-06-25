@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 
+import { type ApprovalConfig, DEFAULT_APPROVAL } from "./approval.js";
 import { estimateTokens, type GatheredDoc } from "./context.js";
 import { reactDir } from "./debug.js";
 
@@ -18,6 +19,8 @@ export interface ContextConfig {
   allowInsecureTls: boolean;
   /** Folder (relative to workspace root) where arxiv_search saves PDFs + notes. */
   arxivDir: string;
+  /** User-authorization policy for state-changing tool executions. */
+  approval: ApprovalConfig;
 }
 
 export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
@@ -31,6 +34,7 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   maxFileBytes: 5_000_000,
   allowInsecureTls: true,
   arxivDir: "papers",
+  approval: DEFAULT_APPROVAL,
 };
 
 export function loadContextConfig(): ContextConfig {

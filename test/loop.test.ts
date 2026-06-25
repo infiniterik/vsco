@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 
+import { requireApproval } from "../src/approval.js";
 import { buildInjection, estimateTokens, rankChunks } from "../src/context.js";
 import { DEFAULT_CONTEXT_CONFIG } from "../src/docs.js";
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
+import { isWithinControlDir, resolveWithinBase } from "../src/sandbox.js";
 import {
   getTool,
   httpGetBuffer,
@@ -21,6 +23,117 @@ import {
   safeArxivId,
 } from "../src/tools.js";
 import { readLastAssistantText } from "../src/transcript.js";
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Run `fn` with the process cwd set to a fresh temp workspace. */
+async function inWorkspace<T>(fn: (ws: string) => Promise<T> | T): Promise<T> {
+  const ws = mkdtempSync(join(tmpdir(), "react-ws-"));
+  const prev = process.cwd();
+  process.chdir(ws);
+  try {
+    return await fn(ws);
+  } finally {
+    process.chdir(prev);
+  }
+}
+
+const approvalCfg = { requireFor: ["run_command", "write_file"], allowCommands: [] as string[], timeoutSec: 5 };
+
+// Run the suite from a base workspace where approval is disabled, so runStep tests that
+// execute run_command aren't blocked waiting for an (absent) approver. Tests that need the
+// gate pass an explicit config to requireApproval and/or chdir into their own workspace.
+let _origCwd = "";
+before(() => {
+  _origCwd = process.cwd();
+  const base = mkdtempSync(join(tmpdir(), "react-base-"));
+  mkdirSync(join(base, ".react-byok"), { recursive: true });
+  writeFileSync(join(base, ".react-byok", "context.json"), JSON.stringify({ approval: { requireFor: [] } }));
+  process.chdir(base);
+});
+after(() => {
+  if (_origCwd) process.chdir(_origCwd);
+});
+
+test("resolveWithinBase allows in-base paths and rejects escapes", async () => {
+  await inWorkspace((ws) => {
+    assert.equal(resolveWithinBase("a/b.txt"), join(process.cwd(), "a/b.txt"));
+    assert.throws(() => resolveWithinBase("../escape.txt"), /outside the workspace/);
+    assert.throws(() => resolveWithinBase("/etc/passwd"), /outside the workspace/);
+    assert.ok(isWithinControlDir(join(ws, ".react-byok", "context.json")));
+    assert.ok(!isWithinControlDir(join(ws, "docs", "x.md")));
+  });
+});
+
+test("write_file refuses escapes and the .react-byok control dir", async () => {
+  await inWorkspace(async () => {
+    const wf = getTool("write_file")!;
+    assert.match((await wf.execute({ path: "../evil.txt", content: "x" })).stderr, /outside the workspace/);
+    assert.match(
+      (await wf.execute({ path: ".react-byok/context.json", content: "x" })).stderr,
+      /control directory/,
+    );
+    assert.equal((await wf.execute({ path: "ok.txt", content: "hi" })).exitCode, 0);
+  });
+});
+
+test("requireApproval auto-allows allowlisted commands without prompting", async () => {
+  await inWorkspace(async () => {
+    const d = await requireApproval("s1", "run_command", "ls -la", "ls -la", {
+      ...approvalCfg,
+      allowCommands: ["^ls\\b"],
+    });
+    assert.equal(d, "allow");
+    assert.equal(readdirSync(".").includes(".react-byok"), false); // no pending request created
+  });
+});
+
+test("requireApproval honors the per-session allow cache", async () => {
+  await inWorkspace(async (ws) => {
+    mkdirSync(join(ws, ".react-byok"), { recursive: true });
+    writeFileSync(join(ws, ".react-byok", "approved.json"), JSON.stringify({ s2: { tools: ["run_command"] } }));
+    assert.equal(await requireApproval("s2", "run_command", "x", "x", approvalCfg), "allow");
+  });
+});
+
+/** Wait for the hook's pending request, then write a decision for it. */
+async function respondToPending(ws: string, decision: string): Promise<void> {
+  const dir = join(ws, ".react-byok", ".pending");
+  for (let i = 0; i < 60; i++) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    } catch {
+      /* dir not created yet */
+    }
+    if (files.length) {
+      const id = files[0].replace(/\.json$/, "");
+      writeFileSync(join(dir, `${id}.decision`), JSON.stringify({ id, decision }));
+      return;
+    }
+    await sleep(50);
+  }
+  throw new Error("no pending approval request appeared");
+}
+
+test("requireApproval resolves to the user's decision (allow / deny)", async () => {
+  await inWorkspace(async (ws) => {
+    const allowP = requireApproval("s3", "run_command", "do x", "do x", approvalCfg);
+    await respondToPending(ws, "allow");
+    assert.equal(await allowP, "allow");
+
+    const denyP = requireApproval("s3b", "run_command", "do y", "do y", approvalCfg);
+    await respondToPending(ws, "deny");
+    assert.equal(await denyP, "deny");
+  });
+});
+
+test("requireApproval fails safe (deny) on timeout", async () => {
+  await inWorkspace(async () => {
+    const d = await requireApproval("s4", "run_command", "z", "z", { ...approvalCfg, timeoutSec: 0.4 });
+    assert.equal(d, "deny");
+  });
+});
 
 test("isCertError flags TLS/cert failures but not generic errors", () => {
   assert.equal(isCertError({ code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" }), true);

@@ -1,4 +1,4 @@
-import { promises as fs, readFileSync } from "node:fs";
+import { promises as fs, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -35,6 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("react-byok.regatherContext", regatherContext),
   );
   watchCommandOutput(context);
+  watchApprovalRequests(context);
   // Make the bundled agents appear on install/reload without running setup.
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     void writeAgents(folder.uri.fsPath, version).catch(() => undefined);
@@ -84,6 +85,48 @@ function watchCommandOutput(context: vscode.ExtensionContext): void {
   watcher.onDidChange(flush);
   context.subscriptions.push(watcher);
   flush(); // surface anything already there
+}
+
+/**
+ * Watch `.react-byok/.pending/*.json` (written by the Stop hook when a gated tool needs
+ * authorization), prompt the user with a modal, and write back the decision file the hook
+ * is polling for. This is the interactive half of the approval handshake.
+ */
+function watchApprovalRequests(context: vscode.ExtensionContext): void {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return;
+  const handled = new Set<string>();
+
+  const handle = async (uri: vscode.Uri): Promise<void> => {
+    if (!uri.fsPath.endsWith(".json") || handled.has(uri.fsPath)) return;
+    handled.add(uri.fsPath);
+    let req: { id: string; tool: string; summary: string };
+    try {
+      req = JSON.parse(readFileSync(uri.fsPath, "utf8"));
+    } catch {
+      return; // file mid-write or already cleaned up
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `ReAct agent requests permission to run: ${req.tool}`,
+      { modal: true, detail: req.summary },
+      "Allow",
+      "Allow for session",
+      "Deny",
+    );
+    const decision = choice === "Allow" ? "allow" : choice === "Allow for session" ? "session" : "deny";
+    try {
+      writeFileSync(uri.fsPath.replace(/\.json$/, ".decision"), JSON.stringify({ id: req.id, decision }));
+    } catch {
+      /* hook will fail safe (deny) on timeout */
+    }
+  };
+
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(folder, ".react-byok/.pending/*.json"),
+  );
+  watcher.onDidCreate((u) => void handle(u));
+  watcher.onDidChange((u) => void handle(u));
+  context.subscriptions.push(watcher);
 }
 
 /** Clear the document-extraction cache so the next session re-reads all documents. */
@@ -146,7 +189,8 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     const hooks = {
       hooks: {
         SessionStart: [hookEntry(hookScript("inject-catalog.js"), 60)],
-        Stop: [hookEntry(hookScript("react-step.js"), 120)],
+        // Generous Stop timeout: the hook may block waiting for the user's approval modal.
+        Stop: [hookEntry(hookScript("react-step.js"), 600)],
         PreCompact: [hookEntry(hookScript("pre-compact.js"), 15)],
       },
     };

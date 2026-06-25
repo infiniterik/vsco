@@ -69,6 +69,14 @@ npm test           # parser + simulated Stop-step tests
 - **Tool output buffer**: each tool run is appended to `.react-byok/commands.log`,
   which the extension tails into the **"ReAct Tools"** Output channel. Run
   *ReAct BYOK: Show tool output* to open it.
+- **Guardrails**: file tools (`read_file`/`read_doc`/`write_file`/`list_files`) are
+  **path-contained** to the workspace root — `../` and absolute escapes are refused, and
+  `write_file` can't touch `.react-byok/` (so the agent can't disable its own guardrails).
+  State-changing executions (`run_command`, `write_file`) require **user authorization**:
+  the Stop hook asks the extension, which shows an Allow / Allow for session / Deny modal;
+  fail-safe is **deny** (timeout or no extension). Configure via `approval` in
+  `.react-byok/context.json` — e.g. add regexes to `allowCommands` to auto-approve safe
+  commands, or change `requireFor`.
 - **Multiple agents** share one tool runtime and are **bundled in the VSIX**, auto-
   deployed to `.github/agents/` on install/reload: **ReAct BYOK** (general) and
   **ArXiv Researcher** (literature reviews over local papers + arXiv). Each agent file

@@ -5,6 +5,7 @@ import { dirname, extname, join, resolve as resolvePath } from "node:path";
 
 import { runSearch } from "./context.js";
 import { extractText, gatherDocuments, loadContextConfig } from "./docs.js";
+import { isWithinControlDir, resolveWithinBase } from "./sandbox.js";
 
 /**
  * Single source of truth for the agent's tools.
@@ -348,12 +349,15 @@ export const readFile: Tool = {
     const p = String(input.path ?? "");
     if (!p) return fail("Provide a 'path'.");
     const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
+    let abs: string;
+    try {
+      abs = resolveWithinBase(p);
+    } catch (e) {
+      return fail(String((e as Error).message));
+    }
     try {
       // PDFs are extracted to text; everything else is read as UTF-8.
-      const raw =
-        extname(p).toLowerCase() === ".pdf"
-          ? await extractText(resolvePath(process.cwd(), p))
-          : readFileSync(resolvePath(process.cwd(), p), "utf8");
+      const raw = extname(p).toLowerCase() === ".pdf" ? await extractText(abs) : readFileSync(abs, "utf8");
       const t = truncate(raw, max);
       return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
     } catch (err) {
@@ -379,8 +383,14 @@ export const readDoc: Tool = {
     const p = String(input.path ?? "");
     if (!p) return fail("Provide a 'path'.");
     const max = parseInt(String(input.max_chars ?? MAX_OUTPUT), 10) || MAX_OUTPUT;
+    let abs: string;
     try {
-      const t = truncate(await extractText(resolvePath(process.cwd(), p)), max);
+      abs = resolveWithinBase(p);
+    } catch (e) {
+      return fail(String((e as Error).message));
+    }
+    try {
+      const t = truncate(await extractText(abs), max);
       return { stdout: t.text, stderr: "", exitCode: 0, timedOut: false, truncated: t.truncated };
     } catch (err) {
       return fail(`Could not read ${p}: ${String(err)}`);
@@ -431,8 +441,16 @@ export const writeFile: Tool = {
     const p = String(input.path ?? "");
     if (!p) return fail("Provide a 'path'.");
     const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+    let abs: string;
     try {
-      const abs = resolvePath(process.cwd(), p);
+      abs = resolveWithinBase(p);
+    } catch (e) {
+      return fail(String((e as Error).message));
+    }
+    if (isWithinControlDir(abs)) {
+      return fail("Refused: writing inside the .react-byok control directory is not allowed.");
+    }
+    try {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, content, "utf8");
       return ok(`Wrote ${content.length} bytes to ${p}.`);
@@ -454,8 +472,13 @@ export const listFiles: Tool = {
   },
   async execute(input) {
     const p = String(input.path ?? ".");
+    let abs: string;
     try {
-      const abs = resolvePath(process.cwd(), p);
+      abs = resolveWithinBase(p);
+    } catch (e) {
+      return fail(String((e as Error).message));
+    }
+    try {
       const entries = readdirSync(abs)
         .sort()
         .map((name) => {
