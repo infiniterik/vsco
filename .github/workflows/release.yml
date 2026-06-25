@@ -1,5 +1,7 @@
 name: Release
 
+# A push to `main` that changes package.json (a version bump) cuts a release: tests run,
+# the VSIX is built, and a tag/release named v<package.json version> is created.
 on:
   push:
     tags:
