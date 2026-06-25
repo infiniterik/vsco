@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { get as httpsGet } from "node:https";
-import { dirname, extname, resolve as resolvePath } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { get as httpsGet, type RequestOptions } from "node:https";
+import { dirname, extname, join, resolve as resolvePath } from "node:path";
 
 import { runSearch } from "./context.js";
 import { extractText, gatherDocuments, loadContextConfig } from "./docs.js";
@@ -116,14 +116,33 @@ function fail(message: string): ToolResult {
   return { stdout: "", stderr: message, exitCode: 1, timedOut: false, truncated: false };
 }
 
-/** Minimal HTTPS GET returning the body as text (no external dependency). */
-function httpGet(url: string): Promise<string> {
+/** TLS/cert verification failures we are willing to retry without verification. */
+export function isCertError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string };
+  const code = e?.code ?? "";
+  return (
+    /CERT|SELF_SIGNED|UNABLE_TO_(GET|VERIFY)|ALTNAME|TLS/i.test(code) ||
+    /certificate|self[- ]signed|unable to (get|verify)/i.test(e?.message ?? "")
+  );
+}
+
+interface GetOpts {
+  /** Retry once with TLS verification disabled if the first attempt hits a cert error. */
+  allowInsecure?: boolean;
+}
+
+/** One HTTPS GET; `rejectUnauthorized` toggles TLS verification. Collects body bytes. */
+function rawGet(url: string, rejectUnauthorized: boolean): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const req = httpsGet(url, { headers: { "User-Agent": "react-byok/0.1" } }, (res) => {
+    const opts: RequestOptions = {
+      headers: { "User-Agent": "react-byok/0.1" },
+      rejectUnauthorized,
+    };
+    const req = httpsGet(url, opts, (res) => {
       const status = res.statusCode ?? 0;
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
-        httpGet(new URL(res.headers.location, url).toString()).then(resolve, reject);
+        rawGet(new URL(res.headers.location, url).toString(), rejectUnauthorized).then(resolve, reject);
         return;
       }
       if (status >= 400) {
@@ -131,14 +150,28 @@ function httpGet(url: string): Promise<string> {
         reject(new Error(`HTTP ${status}`));
         return;
       }
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (body += c));
-      res.on("end", () => resolve(body));
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
     });
     req.setTimeout(DEFAULT_TIMEOUT_MS, () => req.destroy(new Error("request timed out")));
     req.on("error", reject);
   });
+}
+
+/** HTTPS GET (bytes) with an opt-in insecure retry when the CA chain can't be verified. */
+export async function httpGetBuffer(url: string, { allowInsecure = false }: GetOpts = {}): Promise<Buffer> {
+  try {
+    return await rawGet(url, true);
+  } catch (err) {
+    if (allowInsecure && isCertError(err)) return rawGet(url, false);
+    throw err;
+  }
+}
+
+/** HTTPS GET returning text, with the same insecure-on-cert-error fallback. */
+async function httpGet(url: string, opts: GetOpts = {}): Promise<string> {
+  return (await httpGetBuffer(url, opts)).toString("utf8");
 }
 
 function decodeXml(s: string): string {
@@ -152,45 +185,77 @@ function decodeXml(s: string): string {
     .trim();
 }
 
-/** Parse arXiv Atom feed XML into readable plain text. Pure (testable) function. */
-export function parseArxiv(xml: string, query: string): string {
-  const entries = xml
+export interface ArxivEntry {
+  id: string;
+  pdfUrl: string;
+  title: string;
+  authors: string;
+  published: string;
+  summary: string;
+}
+
+/** Parse an arXiv Atom feed into structured entries. Pure (testable) function. */
+export function parseArxivEntries(xml: string): ArxivEntry[] {
+  const blocks = xml
     .split("<entry>")
     .slice(1)
     .map((e) => e.split("</entry>")[0]);
-  if (!entries.length) return `No arXiv results for: ${query}`;
   const tag = (block: string, name: string): string => {
     const m = new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, "i").exec(block);
     return m ? decodeXml(m[1]) : "";
   };
+  return blocks.map((e) => {
+    const id = tag(e, "id");
+    const linkPdf = /<link[^>]*title="pdf"[^>]*href="([^"]+)"/i.exec(e)?.[1];
+    const pdfUrl = (linkPdf ?? id.replace("/abs/", "/pdf/")).replace(/^http:/, "https:");
+    return {
+      id,
+      pdfUrl: /\.pdf$/.test(pdfUrl) ? pdfUrl : `${pdfUrl}.pdf`,
+      title: tag(e, "title"),
+      authors: [...e.matchAll(/<name[^>]*>([\s\S]*?)<\/name>/gi)]
+        .map((m) => decodeXml(m[1]))
+        .slice(0, 8)
+        .join(", "),
+      published: tag(e, "published").slice(0, 10),
+      summary: tag(e, "summary"),
+    };
+  });
+}
+
+/** Render structured entries as the readable text result. */
+export function parseArxiv(xml: string, query: string): string {
+  const entries = parseArxivEntries(xml);
+  if (!entries.length) return `No arXiv results for: ${query}`;
   const out = [`arXiv results for "${query}" (${entries.length}):`, ""];
   entries.forEach((e, i) => {
-    const authors = [...e.matchAll(/<name[^>]*>([\s\S]*?)<\/name>/gi)]
-      .map((m) => decodeXml(m[1]))
-      .slice(0, 6)
-      .join(", ");
-    const summary = tag(e, "summary");
     out.push(
-      `[${i + 1}] ${tag(e, "title")}`,
-      `    Published: ${tag(e, "published").slice(0, 10)}  Authors: ${authors}`,
-      `    Link: ${tag(e, "id")}`,
-      `    Abstract: ${summary.length > 500 ? `${summary.slice(0, 500)}…` : summary}`,
+      `[${i + 1}] ${e.title}`,
+      `    Published: ${e.published}  Authors: ${e.authors}`,
+      `    Link: ${e.id}`,
+      `    Abstract: ${e.summary.length > 500 ? `${e.summary.slice(0, 500)}…` : e.summary}`,
       "",
     );
   });
   return out.join("\n");
 }
 
+/** arXiv id URL → a filesystem-safe basename, e.g. ".../abs/2506.06962v3" → "2506.06962v3". */
+export function safeArxivId(id: string): string {
+  return (id.split("/").pop() || id).replace(/[^\w.-]/g, "_");
+}
+
 // --- additional tools ----------------------------------------------------------
 
 export const arxivSearch: Tool = {
   name: "arxiv_search",
-  description: "Search arXiv for papers and return titles, authors, links, and abstracts.",
+  description:
+    "Search arXiv and AUTOMATICALLY download every result's PDF into the papers/ folder, " +
+    "recording metadata in papers/notes.md. Returns titles, authors, links, and abstracts.",
   inputSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Search terms, e.g. 'speculative decoding'." },
-      max_results: { type: "number", description: "How many results (default 6, max 25)." },
+      max_results: { type: "number", description: "How many results to fetch+download (default 6, max 25)." },
     },
     required: ["query"],
   },
@@ -198,17 +263,75 @@ export const arxivSearch: Tool = {
     const query = String(input.query ?? "").trim();
     if (!query) return fail("Provide a non-empty 'query'.");
     const max = Math.min(Math.max(parseInt(String(input.max_results ?? 6), 10) || 6, 1), 25);
+    const cfg = loadContextConfig();
     const url =
       "https://export.arxiv.org/api/query?search_query=" +
       encodeURIComponent(`all:${query}`) +
       `&start=0&max_results=${max}&sortBy=relevance&sortOrder=descending`;
+
+    let xml: string;
     try {
-      return ok(parseArxiv(await httpGet(url), query));
+      xml = await httpGet(url, { allowInsecure: cfg.allowInsecureTls });
     } catch (err) {
       return fail(`arXiv request failed: ${String(err)}`);
     }
+    const entries = parseArxivEntries(xml);
+    const summary = await downloadAndNote(entries, cfg);
+    return ok(`${parseArxiv(xml, query)}\n${summary}`);
   },
 };
+
+/** Download each paper's PDF into papers/ (skip existing) and append metadata to notes.md. */
+async function downloadAndNote(entries: ArxivEntry[], cfg: { arxivDir: string; allowInsecureTls: boolean }): Promise<string> {
+  if (!entries.length) return "(no papers to download)";
+  const dir = resolvePath(process.cwd(), cfg.arxivDir);
+  mkdirSync(dir, { recursive: true });
+  const notesPath = join(dir, "notes.md");
+  let notes = "";
+  try {
+    notes = readFileSync(notesPath, "utf8");
+  } catch {
+    notes = "# arXiv papers\n";
+  }
+
+  let downloaded = 0;
+  let skipped = 0;
+  const failures: string[] = [];
+  for (const e of entries) {
+    const sid = safeArxivId(e.id);
+    const pdfPath = join(dir, `${sid}.pdf`);
+    if (existsSync(pdfPath)) {
+      skipped++;
+    } else {
+      try {
+        const buf = await httpGetBuffer(e.pdfUrl, { allowInsecure: cfg.allowInsecureTls });
+        writeFileSync(pdfPath, buf);
+        downloaded++;
+      } catch (err) {
+        failures.push(`${sid} (${String(err)})`);
+      }
+    }
+    if (!notes.includes(`(${e.id})`)) {
+      notes +=
+        `\n## ${e.title}\n` +
+        `- Authors: ${e.authors}\n- Published: ${e.published}\n- Link: ${e.id} (${e.id})\n` +
+        `- PDF: ${cfg.arxivDir}/${sid}.pdf\n\n${e.summary}\n`;
+    }
+  }
+  try {
+    writeFileSync(notesPath, notes);
+  } catch {
+    /* best effort */
+  }
+
+  const parts = [
+    `(downloaded ${downloaded} PDF(s)` + (skipped ? `, ${skipped} already present` : "") +
+      ` to ${cfg.arxivDir}/; notes: ${cfg.arxivDir}/notes.md.`,
+  ];
+  if (failures.length) parts.push(` Failed: ${failures.join("; ")}.`);
+  parts.push(" Use read_doc to read any saved PDF.)");
+  return parts.join("");
+}
 
 export const readFile: Tool = {
   name: "read_file",

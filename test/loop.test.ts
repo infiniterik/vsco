@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:https";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,8 +12,49 @@ import { buildInjection, estimateTokens, rankChunks } from "../src/context.js";
 import { DEFAULT_CONTEXT_CONFIG } from "../src/docs.js";
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
 import { runStep } from "../src/hooks/react-step.js";
-import { getTool, parseArxiv } from "../src/tools.js";
+import {
+  getTool,
+  httpGetBuffer,
+  isCertError,
+  parseArxiv,
+  parseArxivEntries,
+  safeArxivId,
+} from "../src/tools.js";
 import { readLastAssistantText } from "../src/transcript.js";
+
+test("isCertError flags TLS/cert failures but not generic errors", () => {
+  assert.equal(isCertError({ code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" }), true);
+  assert.equal(isCertError({ code: "SELF_SIGNED_CERT_IN_CHAIN" }), true);
+  assert.equal(isCertError({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" }), true);
+  assert.equal(isCertError({ message: "unable to verify the first certificate" }), true);
+  assert.equal(isCertError({ code: "ECONNREFUSED" }), false);
+  assert.equal(isCertError({ code: "ETIMEDOUT" }), false);
+});
+
+test("httpGetBuffer skips TLS verification only when allowInsecure is set", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tls-"));
+  execSync(
+    `openssl req -x509 -newkey rsa:2048 -nodes -keyout "${dir}/key.pem" ` +
+      `-out "${dir}/cert.pem" -days 1 -subj "/CN=localhost" 2>/dev/null`,
+  );
+  const server = createServer(
+    { key: readFileSync(join(dir, "key.pem")), cert: readFileSync(join(dir, "cert.pem")) },
+    (_req, res) => res.end("PDF-BYTES"),
+  );
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const url = `https://127.0.0.1:${(server.address() as AddressInfo).port}/p.pdf`;
+  try {
+    // Strict verification fails on the self-signed cert...
+    await assert.rejects(() => httpGetBuffer(url), (e) => isCertError(e));
+    // ...and also fails when insecure retry is not allowed.
+    await assert.rejects(() => httpGetBuffer(url, { allowInsecure: false }), (e) => isCertError(e));
+    // ...but succeeds with the opt-in insecure fallback.
+    const buf = await httpGetBuffer(url, { allowInsecure: true });
+    assert.equal(buf.toString(), "PDF-BYTES");
+  } finally {
+    server.close();
+  }
+});
 
 test("estimateTokens approximates length/4", () => {
   assert.equal(estimateTokens("abcd"), 1);
@@ -87,6 +131,25 @@ test("arxiv parser turns Atom XML into readable text", () => {
   assert.match(out, /A Great Paper/);
   assert.match(out, /Ada Lovelace/);
   assert.match(out, /1234\.5678/);
+});
+
+test("parseArxivEntries extracts fields and a https PDF url (link or derived)", () => {
+  const withLink = `<feed><entry><title>P1</title><id>http://arxiv.org/abs/2506.06962v3</id>`
+    + `<link title="pdf" href="http://arxiv.org/pdf/2506.06962v3"/>`
+    + `<published>2025-06-08T00:00:00Z</published><author><name>X</name></author><summary>s</summary></entry></feed>`;
+  const [e1] = parseArxivEntries(withLink);
+  assert.equal(e1.id, "http://arxiv.org/abs/2506.06962v3");
+  assert.equal(e1.pdfUrl, "https://arxiv.org/pdf/2506.06962v3.pdf");
+  assert.equal(e1.title, "P1");
+
+  const noLink = `<feed><entry><title>P2</title><id>http://arxiv.org/abs/1111.2222</id>`
+    + `<published>2024-01-01T00:00:00Z</published><author><name>Y</name></author><summary>s</summary></entry></feed>`;
+  const [e2] = parseArxivEntries(noLink);
+  assert.equal(e2.pdfUrl, "https://arxiv.org/pdf/1111.2222.pdf");
+});
+
+test("safeArxivId yields a filesystem-safe basename", () => {
+  assert.equal(safeArxivId("http://arxiv.org/abs/2506.06962v3"), "2506.06962v3");
 });
 
 test("preamble advertises the new tools", () => {

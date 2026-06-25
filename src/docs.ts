@@ -14,6 +14,10 @@ export interface ContextConfig {
   searchBudgetTokens: number;
   previewChars: number;
   maxFileBytes: number;
+  /** Retry HTTPS with TLS verification disabled on a certificate error. */
+  allowInsecureTls: boolean;
+  /** Folder (relative to workspace root) where arxiv_search saves PDFs + notes. */
+  arxivDir: string;
 }
 
 export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
@@ -25,6 +29,8 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   searchBudgetTokens: 6_000,
   previewChars: 600,
   maxFileBytes: 5_000_000,
+  allowInsecureTls: true,
+  arxivDir: "papers",
 };
 
 export function loadContextConfig(): ContextConfig {

@@ -155,12 +155,13 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
       `${JSON.stringify(hooks, null, 2)}\n`,
     );
 
-    // 3. Document-context config + docs folder (created if missing).
+    // 3. Document-context config + docs/papers folders (created if missing).
     const ctxPath = path.join(root, ".react-byok", "context.json");
     if (!(await exists(ctxPath))) {
       await writeText(ctxPath, `${JSON.stringify(DEFAULT_CONTEXT_CONFIG, null, 2)}\n`);
     }
     await fs.mkdir(path.join(root, DEFAULT_CONTEXT_CONFIG.dir), { recursive: true });
+    await fs.mkdir(path.join(root, DEFAULT_CONTEXT_CONFIG.arxivDir), { recursive: true });
 
     // 4. Custom agent definitions (shared tool runtime; per-agent task prompt).
     await writeAgents(root, version, model);
@@ -290,14 +291,18 @@ ${renderPreamble()}
 # Your task: literature reviews
 Local documents (PDFs/notes in the configured folder) are gathered into your context at
 the start of each session — check the "Local document context" manifest above. Then:
-1. Use \`search_docs\` {query} to pull the most relevant passages from ALL local documents
-   in one call; use \`read_doc\` {path} for a full document. Use \`arxiv_search\` to find
-   related published work.
-2. Synthesize across the local corpus and arXiv.
-3. Save a Markdown review with \`write_file\` (e.g. \`REVIEW.md\`): Overview, Key papers
-   (Title — Authors, year — link), Themes, Gaps. Write incrementally so progress survives
-   context compaction; \`read_file\` your notes back if the conversation is compacted.
-4. Cite only documents/papers you actually read or that \`arxiv_search\` returned.
+1. Use \`arxiv_search\` {query} to find related published work. It AUTOMATICALLY downloads
+   every result's PDF into \`papers/\` and records metadata in \`papers/notes.md\` — you do
+   not download anything yourself.
+2. Use \`search_docs\` {query} to pull the most relevant passages from the gathered corpus in
+   one call; \`read_doc\` {path} to read a full document — including a downloaded paper, e.g.
+   \`read_doc {"path":"papers/2506.06962v3.pdf"}\` (see \`papers/notes.md\` for paths).
+3. Synthesize across the local corpus and the downloaded arXiv papers. Keep running notes in
+   \`NOTES.md\` via \`write_file\` so progress survives context compaction; \`read_file\` them
+   back if the conversation is compacted.
+4. Save a Markdown review with \`write_file\` (e.g. \`REVIEW.md\`): Overview, Key papers
+   (Title — Authors, year — link), Themes, Gaps. Cite only papers you actually read or that
+   \`arxiv_search\` returned.
 Finish with a \`Final Answer:\` summarizing findings and where you saved the review.
 
 ---
