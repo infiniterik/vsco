@@ -1,4 +1,4 @@
-import { tools, type Tool } from "./tools.js";
+import { tools, type Tool, type ToolResult } from "./tools.js";
 
 /**
  * The ReAct contract: how tools are described to the model (text, not JSON schema)
@@ -82,6 +82,22 @@ stdout:
 Assistant:
 Thought: The count is 7.
 Final Answer: There are 7 TypeScript files in src.`;
+}
+
+/**
+ * Render a tool result as the "Observation:" text fed back to the model. Shared by the
+ * Stop hook (single agent) and the council orchestrator (many agents), so every ReAct
+ * driver speaks the identical protocol.
+ */
+export function formatObservation(toolName: string, r: ToolResult): string {
+  const parts: string[] = [
+    `Observation: result of ${toolName} (exit code ${r.exitCode}${r.timedOut ? ", TIMED OUT" : ""}):`,
+  ];
+  if (r.stdout.trim()) parts.push(`stdout:\n${r.stdout}`);
+  if (r.stderr.trim()) parts.push(`stderr:\n${r.stderr}`);
+  if (!r.stdout.trim() && !r.stderr.trim()) parts.push("(no output)");
+  parts.push('Continue: take another Action, or give your "Final Answer:" if you have enough information.');
+  return parts.join("\n");
 }
 
 export type ParsedTurn =

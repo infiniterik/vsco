@@ -1,7 +1,9 @@
+import { spawn } from "node:child_process";
 import { promises as fs, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { DEFAULT_COUNCIL_CONFIG } from "./council.js";
 import { DEFAULT_CONTEXT_CONFIG } from "./docs.js";
 import { renderPreamble } from "./format.js";
 
@@ -24,6 +26,7 @@ const RUNTIME_FILES = [
   "hooks/inject-catalog.js",
   "hooks/react-step.js",
   "hooks/pre-compact.js",
+  "hooks/council.js",
   "hooks/pdf.worker.mjs",
 ];
 
@@ -33,6 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("react-byok.setup", () => setupWorkspace(context)),
     vscode.commands.registerCommand("react-byok.showOutput", () => reactOutput().show(true)),
     vscode.commands.registerCommand("react-byok.regatherContext", regatherContext),
+    vscode.commands.registerCommand("react-byok.convene", () => conveneCouncil(context)),
   );
   watchCommandOutput(context);
   watchApprovalRequests(context);
@@ -145,6 +149,58 @@ async function regatherContext(): Promise<void> {
   );
 }
 
+/**
+ * Convene the council of experts: prompt for a question, then spawn the bundled council
+ * runner with VS Code's Node (cwd = workspace root, like the hooks), so document gathering
+ * and the read-only tools resolve against the workspace. Progress streams into the
+ * "ReAct Tools" output channel (the runner appends to commands.log, which we tail).
+ */
+async function conveneCouncil(context: vscode.ExtensionContext): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showErrorMessage("ReAct BYOK: open a folder first.");
+    return;
+  }
+  const root = folder.uri.fsPath;
+  const question = await vscode.window.showInputBox({
+    title: "Convene council of experts",
+    prompt: "What should the council deliberate on? (It reasons over the documents in your context.)",
+    ignoreFocusOut: true,
+  });
+  if (!question) return;
+
+  // Prefer the workspace copy (so the user can tweak); fall back to the bundled one.
+  const local = path.join(root, ".react-byok", "hooks", "council.js");
+  const script = (await exists(local)) ? local : path.join(context.extensionPath, "dist", "hooks", "council.js");
+  if (!(await exists(script))) {
+    void vscode.window.showErrorMessage("ReAct BYOK: council runner not found — run setup first.");
+    return;
+  }
+
+  reactOutput().show(true);
+  reactOutput().appendLine(`[council] convening on: ${question}`);
+  const child = spawn(process.execPath, [script, question], {
+    cwd: root,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  });
+  child.on("error", (err) => void vscode.window.showErrorMessage(`Council failed to start: ${String(err)}`));
+  child.on("close", async (code) => {
+    if (code !== 0) {
+      void vscode.window.showWarningMessage(`Council exited with code ${code}. See the "ReAct Tools" output.`);
+      return;
+    }
+    const report = path.join(root, "COUNCIL.md");
+    if (await exists(report)) {
+      const choice = await vscode.window.showInformationMessage("Council finished — wrote COUNCIL.md.", "Open");
+      if (choice === "Open") {
+        const doc = await vscode.workspace.openTextDocument(report);
+        await vscode.window.showTextDocument(doc);
+      }
+    }
+  });
+  context.subscriptions.push({ dispose: () => child.kill() });
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
@@ -206,6 +262,20 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     }
     await fs.mkdir(path.join(root, DEFAULT_CONTEXT_CONFIG.dir), { recursive: true });
     await fs.mkdir(path.join(root, DEFAULT_CONTEXT_CONFIG.arxivDir), { recursive: true });
+
+    // Council-of-experts config (kept separate; holds the OpenAI-compatible endpoint).
+    const councilPath = path.join(root, ".react-byok", "council.json");
+    if (!(await exists(councilPath))) {
+      const council = {
+        ...DEFAULT_COUNCIL_CONFIG,
+        llm: {
+          baseUrl: "http://localhost:11434/v1",
+          apiKey: "env:OPENAI_API_KEY",
+          model,
+        },
+      };
+      await writeText(councilPath, `${JSON.stringify(council, null, 2)}\n`);
+    }
 
     // 4. Custom agent definitions (shared tool runtime; per-agent task prompt).
     await writeAgents(root, version, model);

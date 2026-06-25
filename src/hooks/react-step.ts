@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { requireApproval } from "../approval.js";
 import { logDebug, recordCommandOutput, snippet } from "../debug.js";
 import { loadContextConfig } from "../docs.js";
-import { parseAssistantTurn } from "../format.js";
-import { getTool, tools, type ToolResult } from "../tools.js";
+import { formatObservation, parseAssistantTurn } from "../format.js";
+import { getTool, tools } from "../tools.js";
 import { readLastAssistantText, sampleTranscript } from "../transcript.js";
 import { parseStdin, protectStdout, readStdin, writeOutput } from "./io.js";
 
@@ -112,17 +112,6 @@ function regenerate(sessionId: string, reason: string): StopOutput {
   }
   // Still malformed after the finalize nudge — end the session to guarantee termination.
   return allowStop();
-}
-
-function formatObservation(toolName: string, r: ToolResult): string {
-  const parts: string[] = [
-    `Observation: result of ${toolName} (exit code ${r.exitCode}${r.timedOut ? ", TIMED OUT" : ""}):`,
-  ];
-  if (r.stdout.trim()) parts.push(`stdout:\n${r.stdout}`);
-  if (r.stderr.trim()) parts.push(`stderr:\n${r.stderr}`);
-  if (!r.stdout.trim() && !r.stderr.trim()) parts.push("(no output)");
-  parts.push('Continue: take another Action, or give your "Final Answer:" if you have enough information.');
-  return parts.join("\n");
 }
 
 export async function runStep(input: StopInput): Promise<StopOutput> {

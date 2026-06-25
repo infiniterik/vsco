@@ -90,13 +90,39 @@ npm test           # parser + simulated Stop-step tests
   **ArXiv Researcher** (literature reviews over local papers + arXiv). Each agent file
   is just a task-specific prompt; add more via the `AGENTS` list in `src/extension.ts`.
 
+## Council of experts
+
+Run **several expert agents that debate** over the same documents and reach a verdict —
+a multi-agent discussion, not a single agent. Run *ReAct BYOK: Convene council of experts*,
+type a question, and watch it in the "ReAct Tools" output; it writes `COUNCIL.md`.
+
+- **How it reuses the engine, not VS Code.** VS Code drives exactly one interactive chat
+  session and has no API to spawn/relay peer sessions, so a council can't live in its agent
+  runtime. But the no-tool-calling workaround (catalog-as-text → parse Action → run tool →
+  Observation) is just `format.ts` + `tools.ts` with no VS Code dependency. The council
+  calls your **OpenAI-compatible endpoint directly** and runs that same ReAct loop per
+  expert — so each expert is a tool-capable ReAct agent without native tool-calling.
+- **Concurrency + bus.** Experts in a round run **in parallel** (`Promise.all`) but commit
+  to a shared bus (`.react-byok/council/bus.jsonl`) at the **round boundary**, so each
+  expert sees the others' last-round remarks — real cross-talk, no races. After `rounds`
+  rounds a moderator synthesizes the bus into `COUNCIL.md`.
+- **Config** (`.react-byok/council.json`): `llm` (`baseUrl`, `apiKey` — supports
+  `"env:VAR"`, `model`), `experts` (name + persona), `moderator`, `rounds`, and `useTools`
+  (default false = prose debate over the injected documents; true = experts may use the
+  **read-only** tools `search_docs`/`read_doc`/`read_file`/`list_files`/`fetch_url` via a
+  bounded ReAct loop — no `run_command`/`write_file`, so no approval prompts mid-debate).
+- Runs as a spawned subprocess with VS Code's Node (cwd = workspace root, like the hooks).
+
 ## Layout
 
 - `src/tools.ts` — tool definitions (single source of truth).
-- `src/format.ts` — text catalog/preamble + the action parser.
+- `src/format.ts` — text catalog/preamble + action parser + observation formatter.
 - `src/transcript.ts` — reads the last assistant message.
 - `src/hooks/inject-catalog.ts` — `SessionStart` hook.
 - `src/hooks/react-step.ts` — `Stop` hook (the loop engine).
+- `src/council.ts` — council orchestration + the portable ReAct driver (`runReactAgent`).
+- `src/llm.ts` — OpenAI-compatible chat client.
+- `src/council-run.ts` — bundled council runner (spawned by the convene command).
 
 ## Safety
 

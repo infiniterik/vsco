@@ -2,7 +2,7 @@
   "name": "react-byok",
   "displayName": "ReAct BYOK",
   "description": "Run a no-tool-calling LLM as a ReAct agent via VS Code agent hooks.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "react-byok",
   "license": "MIT",
   "repository": {
@@ -32,6 +32,10 @@
       {
         "command": "react-byok.regatherContext",
         "title": "ReAct BYOK: Re-gather document context"
+      },
+      {
+        "command": "react-byok.convene",
+        "title": "ReAct BYOK: Convene council of experts"
       }
     ]
   },

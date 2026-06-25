@@ -39,6 +39,9 @@ await build({
     "hooks/inject-catalog": "src/hooks/inject-catalog.ts",
     "hooks/react-step": "src/hooks/react-step.ts",
     "hooks/pre-compact": "src/hooks/pre-compact.ts",
+    // The council runner gathers documents (pdf.js) and runs experts as ReAct agents,
+    // so it lives in the pdf-bundled group and beside pdf.worker.mjs.
+    "hooks/council": "src/council-run.ts",
   },
   outdir: "dist",
   external: ["canvas"], // optional native dep of pdf.js, not needed for text extraction

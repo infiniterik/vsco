@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +10,16 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 
 import { requireApproval } from "../src/approval.js";
+import {
+  DEFAULT_COUNCIL_CONFIG,
+  readonlyTools,
+  renderCouncilReport,
+  resolveApiKey,
+  runCouncil,
+  runReactAgent,
+} from "../src/council.js";
+import type { ChatMessage } from "../src/llm.js";
+import { chat } from "../src/llm.js";
 import { buildInjection, estimateTokens, rankChunks, runSearch } from "../src/context.js";
 import { DEFAULT_CONTEXT_CONFIG } from "../src/docs.js";
 import { parseAssistantTurn, renderPreamble } from "../src/format.js";
@@ -477,4 +488,119 @@ test("maxSteps in context.json sets the loop cap live", async () => {
     );
     assert.deepEqual(outs.at(-1), { continue: true });
   });
+});
+
+test("resolveApiKey resolves env: references, passes literals, empties on missing", () => {
+  process.env.COUNCIL_TEST_KEY = "secret-xyz";
+  assert.equal(resolveApiKey("env:COUNCIL_TEST_KEY"), "secret-xyz");
+  assert.equal(resolveApiKey("literal-key"), "literal-key");
+  assert.equal(resolveApiKey("env:DEFINITELY_MISSING_VAR_123"), "");
+  delete process.env.COUNCIL_TEST_KEY;
+});
+
+test("chat() posts OpenAI-compatible and returns the message content", async () => {
+  const server = createHttpServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const j = JSON.parse(body);
+      assert.equal(req.headers.authorization, "Bearer k1");
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content: `hi from ${j.model}` } }] }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const out = await chat(
+      { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "k1", model: "m1" },
+      [{ role: "user", content: "x" }],
+    );
+    assert.equal(out, "hi from m1");
+  } finally {
+    server.close();
+  }
+});
+
+test("runReactAgent drives the text protocol: a tool step, then Final Answer", async () => {
+  await inWorkspace(async (ws) => {
+    writeFileSync(join(ws, "a.txt"), "x");
+    let n = 0;
+    const llm = async (): Promise<string> => {
+      n++;
+      return n === 1
+        ? 'Thought: list files.\nAction: list_files\nAction Input: {"path":"."}'
+        : "Thought: done.\nFinal Answer: The folder contains a.txt.";
+    };
+    const { answer, toolCalls } = await runReactAgent({
+      llm,
+      system: "You are a tester.",
+      task: "What is in the folder?",
+      toolList: readonlyTools(),
+      maxSteps: 4,
+    });
+    assert.equal(toolCalls, 1, "ran exactly one tool");
+    assert.match(answer, /a\.txt/);
+  });
+});
+
+test("runReactAgent refuses tools outside its allowed list", async () => {
+  const llm = async (): Promise<string> => "Action: run_command\nAction Input: {\"cmd\":\"echo hi\"}";
+  // Only one harmless call then it would loop; cap at 1 so the test is fast. run_command is
+  // a real registered tool but NOT in readonlyTools, so it must be refused (never executed).
+  const { toolCalls } = await runReactAgent({
+    llm,
+    system: "s",
+    task: "t",
+    toolList: readonlyTools(),
+    maxSteps: 1,
+  });
+  assert.equal(toolCalls, 0, "forbidden tool was not executed");
+});
+
+test("runCouncil: rounds in order, experts see prior remarks, moderator synthesizes", async () => {
+  const cfg = {
+    ...DEFAULT_COUNCIL_CONFIG,
+    rounds: 2,
+    useTools: false,
+    experts: [
+      { name: "A", persona: "perspective A" },
+      { name: "B", persona: "perspective B" },
+    ],
+    moderator: { name: "Chair", persona: "synthesize neutrally" },
+  };
+  const round2Tasks: string[] = [];
+  const llm = async (messages: ChatMessage[]): Promise<string> => {
+    const user = messages[messages.length - 1].content;
+    if (/# Your synthesis/.test(user)) return "## Bottom line\nThe council agrees.";
+    if (/round 2\)/.test(user)) {
+      round2Tasks.push(user);
+      return "round-2 statement";
+    }
+    return "round-1 statement";
+  };
+  const streamed: string[] = [];
+  const { bus, verdict } = await runCouncil(cfg, "Is X good?", {
+    llm,
+    docContext: "DOCDIGEST",
+    onMessage: (m) => streamed.push(`${m.from}@${m.round}`),
+  });
+
+  assert.equal(verdict, "## Bottom line\nThe council agrees.");
+  // 2 rounds x 2 experts + 1 moderator message.
+  assert.equal(bus.length, 5);
+  assert.equal(bus.filter((m) => m.round < 2).length, 4);
+  assert.equal(bus.at(-1)?.from, "Chair");
+  // Round-2 experts were shown round-1 remarks and the shared documents.
+  assert.ok(round2Tasks.length === 2, "both experts spoke in round 2");
+  assert.match(round2Tasks[0], /### A \(round 1\)/);
+  assert.match(round2Tasks[0], /DOCDIGEST/);
+  // Messages streamed in commit order, moderator last.
+  assert.deepEqual(streamed, ["A@0", "B@0", "A@1", "B@1", "Chair@2"]);
+
+  const report = renderCouncilReport(cfg, "Is X good?", bus, verdict);
+  assert.match(report, /# Council verdict/);
+  assert.match(report, /### Round 1/);
+  assert.match(report, /### Round 2/);
+  assert.match(report, /## Verdict\n## Bottom line/);
 });
