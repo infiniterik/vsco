@@ -349,18 +349,34 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
  * workspace is on OneDrive, its placeholder folders make Windows fail process creation
  * with "spawn UNKNOWN" before the script can run. The real workspace path is passed in
  * REACT_BYOK_WORKSPACE, which the hooks use to resolve `.react-byok/`, documents, etc.
+ *
+ * Neither the executable nor the script path is embedded in the command STRING — both are
+ * passed as env vars (REACT_BYOK_EXE / REACT_BYOK_SCRIPT) and referenced from there. A path
+ * with a space or apostrophe under `C:\Users\<name>\AppData\…` otherwise breaks PowerShell
+ * parsing ("unexpected token") and the hook never starts. Env-var values are plain strings
+ * (no shell parsing), so any character in the path is safe.
  */
 function hookEntry(scriptPath: string, timeout: number, cwd: string, workspace: string) {
   const exe = process.execPath;
   return {
     type: "command",
-    command: `"${exe}" "${scriptPath}"`,
-    windows: `& '${exe}' '${scriptPath}'`,
+    // POSIX shells (macOS/Linux): expand the env vars, quoted to preserve spaces.
+    command: `"$REACT_BYOK_EXE" "$REACT_BYOK_SCRIPT"`,
+    // PowerShell (VS Code's Windows default): `&` call operator on the env-var values.
+    windows: `& "$env:REACT_BYOK_EXE" "$env:REACT_BYOK_SCRIPT"`,
     cwd,
     // ELECTRON_RUN_AS_NODE: run the VS Code executable as plain Node.
     // REACT_BYOK_DEBUG: append a diagnostic line to .react-byok/hook.log each call.
     // REACT_BYOK_WORKSPACE: the workspace root the hook reads/writes (cwd is local).
-    env: { ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_DEBUG: "1", REACT_BYOK_WORKSPACE: workspace },
+    // REACT_BYOK_EXE / REACT_BYOK_SCRIPT: the Node runtime + script, kept out of the
+    // command string so no path is ever shell-parsed.
+    env: {
+      ELECTRON_RUN_AS_NODE: "1",
+      REACT_BYOK_DEBUG: "1",
+      REACT_BYOK_WORKSPACE: workspace,
+      REACT_BYOK_EXE: exe,
+      REACT_BYOK_SCRIPT: scriptPath,
+    },
     timeout,
   };
 }
