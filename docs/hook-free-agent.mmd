@@ -1,0 +1,18 @@
+flowchart TD
+    U["You: run 'ReAct BYOK: Run agent (hook-free)'<br/>then type a task"] --> EXT["Extension (inside VS Code)"]
+    EXT -->|"spawn(Code.exe, …) DIRECTLY<br/>no shell → never invokes cmd.exe"| AGENT["agent.js runner<br/>cwd = local staged runtime<br/>REACT_BYOK_WORKSPACE = your project"]
+    AGENT --> CFG["Load .react-byok/council.json<br/>(your OpenAI-compatible endpoint)"]
+    AGENT --> DOCS["Gather docs/ → text context"]
+    CFG --> LOOP{"ReAct loop"}
+    DOCS --> LOOP
+    LOOP -->|"prompt: task + tools described as TEXT"| LLM[("Your model<br/>OpenAI-compatible URL")]
+    LLM -->|"Thought / Action / Final Answer (plain text)"| PARSE["Parse the reply"]
+    PARSE -->|"Action"| GATE{"run_command or write_file?"}
+    GATE -->|"yes"| MODAL["Approval modal:<br/>Allow / Deny"]
+    GATE -->|"no — read-only tool"| TOOL["Execute tool<br/>(path-contained to workspace)"]
+    MODAL -->|"Allow"| TOOL
+    MODAL -->|"Deny"| LOOP
+    TOOL -->|"Observation"| LOOP
+    PARSE -->|"Final Answer"| ANS["Write ANSWER.md"]
+    TOOL -. "progress + tool output" .-> OUT["'ReAct Tools' output channel"]
+    ANS --> DONE["VS Code offers to open ANSWER.md"]
