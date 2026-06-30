@@ -77,7 +77,7 @@ export const runCommand: Tool = {
       return { stdout: "", stderr: "Empty command.", exitCode: 1, timedOut: false, truncated: false };
     }
     return await new Promise<ToolResult>((resolve) => {
-      const child = spawn(cmd, { shell: true, cwd });
+      const child = spawn(cmd, { shell: true, cwd, windowsHide: true });
       let stdout = "";
       let stderr = "";
       let timedOut = false;

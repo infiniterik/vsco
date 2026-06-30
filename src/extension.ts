@@ -20,8 +20,9 @@ const DEFAULT_MODEL = "ollama/llama3.1";
  * no `npm install` in the target project.
  */
 
-// The bundled (esbuild) hook runtimes — self-contained, so they're the only files
-// copied into the workspace; pdf.js and all logic are bundled inside them.
+// The bundled (esbuild) hook runtimes — self-contained (pdf.js + all logic bundled in).
+// Staged into LOCAL global storage by stageRuntime(), not the workspace, so OneDrive
+// online-only placeholders can't break process creation.
 const RUNTIME_FILES = [
   "hooks/inject-catalog.js",
   "hooks/react-step.js",
@@ -40,9 +41,44 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   watchCommandOutput(context);
   watchApprovalRequests(context);
+  // Stage the executable runtime into LOCAL global storage now, so an extension update
+  // refreshes the scripts that the generated react.json already points at (no re-setup).
+  void stageRuntime(context).catch(() => undefined);
   // Make the bundled agents appear on install/reload without running setup.
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     void writeAgents(folder.uri.fsPath, version).catch(() => undefined);
+  }
+}
+
+/** Local (never-OneDrive) directory holding the staged hook runtime. */
+function runtimeRoot(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "runtime");
+}
+
+/**
+ * Copy the bundled hook runtime into the extension's global storage and return that dir.
+ *
+ * Global storage lives under %APPDATA% / ~/.config — a LOCAL path that OneDrive never
+ * redirects — and is keyed by extension id (stable across version updates). The generated
+ * hook command points here instead of at the workspace copy, because a workspace under
+ * OneDrive can hold the scripts as online-only placeholders, and the OS then fails process
+ * creation with "spawn UNKNOWN" before the script runs. Data/config still lives in the
+ * workspace `.react-byok/` (read via normal file I/O, which OneDrive hydrates on demand).
+ *
+ * Falls back to the (also-local) extension install dir if staging fails.
+ */
+async function stageRuntime(context: vscode.ExtensionContext): Promise<string> {
+  const dest = runtimeRoot(context);
+  try {
+    for (const rel of RUNTIME_FILES) {
+      const from = path.join(context.extensionPath, "dist", rel);
+      const to = path.join(dest, rel);
+      await fs.mkdir(path.dirname(to), { recursive: true });
+      await fs.copyFile(from, to);
+    }
+    return dest;
+  } catch {
+    return path.join(context.extensionPath, "dist");
   }
 }
 
@@ -169,11 +205,11 @@ async function conveneCouncil(context: vscode.ExtensionContext): Promise<void> {
   });
   if (!question) return;
 
-  // Prefer the workspace copy (so the user can tweak); fall back to the bundled one.
-  const local = path.join(root, ".react-byok", "hooks", "council.js");
-  const script = (await exists(local)) ? local : path.join(context.extensionPath, "dist", "hooks", "council.js");
+  // Run the locally-staged runner (never the OneDrive workspace copy) to avoid spawn UNKNOWN.
+  const runtime = await stageRuntime(context);
+  const script = path.join(runtime, "hooks", "council.js");
   if (!(await exists(script))) {
-    void vscode.window.showErrorMessage("ReAct BYOK: council runner not found — run setup first.");
+    void vscode.window.showErrorMessage("ReAct BYOK: council runner not found — reinstall the extension.");
     return;
   }
 
@@ -182,6 +218,7 @@ async function conveneCouncil(context: vscode.ExtensionContext): Promise<void> {
   const child = spawn(process.execPath, [script, question], {
     cwd: root,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    windowsHide: true,
   });
   child.on("error", (err) => void vscode.window.showErrorMessage(`Council failed to start: ${String(err)}`));
   child.on("close", async (code) => {
@@ -228,20 +265,18 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     })) ?? DEFAULT_MODEL;
 
   try {
-    // 1. Copy the self-contained hook runtime into the workspace.
-    for (const rel of RUNTIME_FILES) {
-      const from = path.join(context.extensionPath, "dist", rel);
-      const to = path.join(root, ".react-byok", rel);
-      await fs.mkdir(path.dirname(to), { recursive: true });
-      await fs.copyFile(from, to);
-    }
+    // 1. Stage the self-contained hook runtime in LOCAL global storage (never OneDrive),
+    //    so the executed scripts are always real local files — a workspace under OneDrive
+    //    can hold them as online-only placeholders, which makes the OS fail process
+    //    creation with "spawn UNKNOWN". Workspace `.react-byok/` keeps only config/state.
+    const runtime = await stageRuntime(context);
 
     // 2. Hook configuration. Run the scripts with the Node runtime that VS Code
     //    already ships (process.execPath) rather than a system `node`, so this works
     //    on machines with no Node/dev setup installed. ELECTRON_RUN_AS_NODE makes the
     //    VS Code executable behave as plain Node instead of launching the UI. Generous
     //    timeouts: SessionStart/Stop may extract PDFs for context gathering.
-    const hookScript = (name: string): string => path.join(root, ".react-byok", "hooks", name);
+    const hookScript = (name: string): string => path.join(runtime, "hooks", name);
     const hooks = {
       hooks: {
         SessionStart: [hookEntry(hookScript("inject-catalog.js"), 60)],
