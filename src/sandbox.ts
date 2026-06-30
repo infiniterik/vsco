@@ -1,10 +1,10 @@
 import { resolve, sep } from "node:path";
 
-import { reactDir } from "./debug.js";
+import { reactDir, workspaceRoot } from "./debug.js";
 
 /** The base directory reads/writes must stay inside: the workspace root. */
 export function baseDir(): string {
-  return process.cwd();
+  return workspaceRoot();
 }
 
 /**

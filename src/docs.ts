@@ -4,7 +4,7 @@ import { extname, join, relative, resolve } from "node:path";
 
 import { type ApprovalConfig, DEFAULT_APPROVAL } from "./approval.js";
 import { estimateTokens, type GatheredDoc } from "./context.js";
-import { reactDir } from "./debug.js";
+import { reactDir, workspaceRoot } from "./debug.js";
 
 export interface ContextConfig {
   enabled: boolean;
@@ -62,7 +62,7 @@ export interface DocEntry {
 }
 
 /** Recursively list documents under the configured directory. */
-export function listDocuments(cfg: ContextConfig, root = process.cwd()): DocEntry[] {
+export function listDocuments(cfg: ContextConfig, root = workspaceRoot()): DocEntry[] {
   const base = resolve(root, cfg.dir);
   const out: DocEntry[] = [];
   const include = new Set(cfg.include.map((e) => e.toLowerCase()));
@@ -163,7 +163,7 @@ async function extractPdf(path: string): Promise<string> {
 }
 
 /** List, extract, and token-count every configured document. */
-export async function gatherDocuments(cfg: ContextConfig, root = process.cwd()): Promise<GatheredDoc[]> {
+export async function gatherDocuments(cfg: ContextConfig, root = workspaceRoot()): Promise<GatheredDoc[]> {
   const entries = listDocuments(cfg, root);
   const out: GatheredDoc[] = [];
   for (const e of entries) {

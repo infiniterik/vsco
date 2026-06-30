@@ -2,12 +2,21 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Resolve a path inside the workspace's `.react-byok/` directory. VS Code runs hook
- * commands with the working directory set to the workspace root, so `process.cwd()`
- * is the reliable anchor (the scripts are bundled, so `__dirname` is not).
+ * The workspace root the hook should operate on.
+ *
+ * The generated hook config sets the process `cwd` to a LOCAL directory (never the
+ * OneDrive-synced workspace, whose placeholder folders make Windows fail process
+ * creation with "spawn UNKNOWN") and passes the real workspace path in
+ * REACT_BYOK_WORKSPACE. So we anchor on that env var, falling back to `process.cwd()`
+ * for direct/test invocations where it isn't set.
  */
+export function workspaceRoot(): string {
+  return process.env.REACT_BYOK_WORKSPACE || process.cwd();
+}
+
+/** Resolve a path inside the workspace's `.react-byok/` directory. */
 export function reactDir(...parts: string[]): string {
-  const dir = join(process.cwd(), ".react-byok");
+  const dir = join(workspaceRoot(), ".react-byok");
   return parts.length ? join(dir, ...parts) : dir;
 }
 

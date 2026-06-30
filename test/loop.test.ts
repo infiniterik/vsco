@@ -604,3 +604,21 @@ test("runCouncil: rounds in order, experts see prior remarks, moderator synthesi
   assert.match(report, /### Round 2/);
   assert.match(report, /## Verdict\n## Bottom line/);
 });
+
+test("REACT_BYOK_WORKSPACE anchors workspace paths regardless of process cwd", async () => {
+  const { workspaceRoot, reactDir } = await import("../src/debug.js");
+  const { baseDir } = await import("../src/sandbox.js");
+  const fake = mkdtempSync(join(tmpdir(), "ws-env-"));
+  const prev = process.env.REACT_BYOK_WORKSPACE;
+  try {
+    process.env.REACT_BYOK_WORKSPACE = fake;
+    // cwd is the suite's base workspace, but the env var must win.
+    assert.notEqual(process.cwd(), fake);
+    assert.equal(workspaceRoot(), fake);
+    assert.equal(baseDir(), fake);
+    assert.equal(reactDir("context.json"), join(fake, ".react-byok", "context.json"));
+  } finally {
+    if (prev === undefined) delete process.env.REACT_BYOK_WORKSPACE;
+    else process.env.REACT_BYOK_WORKSPACE = prev;
+  }
+});

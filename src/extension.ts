@@ -216,8 +216,9 @@ async function conveneCouncil(context: vscode.ExtensionContext): Promise<void> {
   reactOutput().show(true);
   reactOutput().appendLine(`[council] convening on: ${question}`);
   const child = spawn(process.execPath, [script, question], {
-    cwd: root,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    // Local cwd (not the OneDrive workspace) to avoid spawn UNKNOWN; workspace via env.
+    cwd: runtime,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_WORKSPACE: root },
     windowsHide: true,
   });
   child.on("error", (err) => void vscode.window.showErrorMessage(`Council failed to start: ${String(err)}`));
@@ -279,10 +280,10 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
     const hookScript = (name: string): string => path.join(runtime, "hooks", name);
     const hooks = {
       hooks: {
-        SessionStart: [hookEntry(hookScript("inject-catalog.js"), 60)],
+        SessionStart: [hookEntry(hookScript("inject-catalog.js"), 60, runtime, root)],
         // Generous Stop timeout: the hook may block waiting for the user's approval modal.
-        Stop: [hookEntry(hookScript("react-step.js"), 600)],
-        PreCompact: [hookEntry(hookScript("pre-compact.js"), 15)],
+        Stop: [hookEntry(hookScript("react-step.js"), 600, runtime, root)],
+        PreCompact: [hookEntry(hookScript("pre-compact.js"), 15, runtime, root)],
       },
     };
     await writeText(
@@ -343,16 +344,23 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
  *  - `windows` (PowerShell, VS Code's default on Windows): PowerShell parses a
  *    leading quoted string as a string literal, NOT a command, so it needs the call
  *    operator `&`. Single-quoted literals avoid backslash/space escaping problems.
+ *
+ * `cwd` is set to a LOCAL directory (the staged runtime), not the workspace: when the
+ * workspace is on OneDrive, its placeholder folders make Windows fail process creation
+ * with "spawn UNKNOWN" before the script can run. The real workspace path is passed in
+ * REACT_BYOK_WORKSPACE, which the hooks use to resolve `.react-byok/`, documents, etc.
  */
-function hookEntry(scriptPath: string, timeout: number) {
+function hookEntry(scriptPath: string, timeout: number, cwd: string, workspace: string) {
   const exe = process.execPath;
   return {
     type: "command",
     command: `"${exe}" "${scriptPath}"`,
     windows: `& '${exe}' '${scriptPath}'`,
+    cwd,
     // ELECTRON_RUN_AS_NODE: run the VS Code executable as plain Node.
     // REACT_BYOK_DEBUG: append a diagnostic line to .react-byok/hook.log each call.
-    env: { ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_DEBUG: "1" },
+    // REACT_BYOK_WORKSPACE: the workspace root the hook reads/writes (cwd is local).
+    env: { ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_DEBUG: "1", REACT_BYOK_WORKSPACE: workspace },
     timeout,
   };
 }

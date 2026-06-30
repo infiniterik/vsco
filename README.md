@@ -44,14 +44,21 @@ This is packaged as a VS Code extension that bundles the hook runtime.
 > `.github/hooks/react.json`, so **re-run the setup command after moving the project
 > to another machine or upgrading VS Code** if the path changes.
 
-> **OneDrive (Windows).** The executable hook scripts are staged into the extension's
-> **local** global storage (`%APPDATA%\…\globalStorage`), *not* the workspace, because a
-> workspace synced to OneDrive can hold them as online-only placeholders — and Windows
-> then fails process creation with `spawn UNKNOWN` before the script runs. Only config and
-> state stay in the workspace `.react-byok/` (read via normal file I/O, which OneDrive
-> hydrates on demand). So a OneDrive-hosted project works without moving it off OneDrive;
-> just **re-run setup** so `react.json` points at the local staged runtime. (Global storage
-> is keyed by extension id, so extension updates refresh it automatically — no re-setup.)
+> **OneDrive (Windows).** Two OneDrive hazards both cause `spawn UNKNOWN` (the OS refuses
+> to create a process from/into a OneDrive placeholder), so both the hook's **executable**
+> and its **working directory** are kept off OneDrive:
+> - The hook scripts are staged into the extension's **local** global storage
+>   (`%APPDATA%\…\globalStorage`), not the workspace.
+> - The generated `react.json` sets each hook's `cwd` to that local dir and passes the real
+>   workspace path in `REACT_BYOK_WORKSPACE`; the hooks resolve `.react-byok/`, documents,
+>   and `run_command`'s directory from that env var instead of the process `cwd`.
+>
+> So a OneDrive-hosted project runs without moving it off OneDrive — just **re-run setup**
+> so `react.json` carries the local `cwd` + workspace env. (Global storage is keyed by
+> extension id, so extension updates refresh the staged scripts automatically.) One caveat:
+> `run_command` still launches shells **in** the workspace, so commands that themselves
+> spawn from OneDrive placeholders can fail — if you rely heavily on `run_command`, pin the
+> project folder ("Always keep on this device") so its files are fully local.
 
 ### Build the VSIX yourself
 

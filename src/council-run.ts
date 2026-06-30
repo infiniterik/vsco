@@ -7,7 +7,9 @@ import {
   resolveApiKey,
   runCouncil,
 } from "./council.js";
-import { reactDir } from "./debug.js";
+import { join } from "node:path";
+
+import { reactDir, workspaceRoot } from "./debug.js";
 import { buildInjection } from "./context.js";
 import { gatherDocuments, loadContextConfig } from "./docs.js";
 import { makeLlm } from "./llm.js";
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
     });
 
     const report = renderCouncilReport(cfg, question, bus, verdict);
-    writeFileSync("COUNCIL.md", report, "utf8");
+    writeFileSync(join(workspaceRoot(), "COUNCIL.md"), report, "utf8");
     progress("Done — wrote COUNCIL.md");
   } catch (err) {
     progress(`Council failed: ${String(err)}`);

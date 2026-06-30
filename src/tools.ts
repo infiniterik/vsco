@@ -5,6 +5,7 @@ import { get as httpsGet, type RequestOptions } from "node:https";
 import { dirname, extname, join, resolve as resolvePath } from "node:path";
 
 import { runSearch } from "./context.js";
+import { workspaceRoot } from "./debug.js";
 import { extractText, gatherDocuments, loadContextConfig } from "./docs.js";
 import { isWithinControlDir, resolveWithinBase } from "./sandbox.js";
 
@@ -72,7 +73,7 @@ export const runCommand: Tool = {
   },
   async execute(input) {
     const cmd = String(input.cmd ?? "");
-    const cwd = input.cwd ? String(input.cwd) : process.cwd();
+    const cwd = input.cwd ? String(input.cwd) : workspaceRoot();
     if (!cmd.trim()) {
       return { stdout: "", stderr: "Empty command.", exitCode: 1, timedOut: false, truncated: false };
     }
@@ -298,7 +299,7 @@ export const arxivSearch: Tool = {
 /** Download each paper's PDF into papers/ (skip existing) and append metadata to notes.md. */
 async function downloadAndNote(entries: ArxivEntry[], cfg: { arxivDir: string; allowInsecureTls: boolean }): Promise<string> {
   if (!entries.length) return "(no papers to download)";
-  const dir = resolvePath(process.cwd(), cfg.arxivDir);
+  const dir = resolvePath(workspaceRoot(), cfg.arxivDir);
   mkdirSync(dir, { recursive: true });
   const notesPath = join(dir, "notes.md");
   let notes = "";
