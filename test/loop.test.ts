@@ -622,3 +622,45 @@ test("REACT_BYOK_WORKSPACE anchors workspace paths regardless of process cwd", a
     else process.env.REACT_BYOK_WORKSPACE = prev;
   }
 });
+
+test("runReactAgent gate can deny a tool (not executed) and allow it (executed)", async () => {
+  await inWorkspace(async (ws) => {
+    writeFileSync(join(ws, "seed.txt"), "x");
+    // Deny: the model asks to list, the gate denies → list_files never runs, agent finalizes.
+    let denied = 0;
+    const denyLlm = async (): Promise<string> => {
+      denied++;
+      return denied === 1
+        ? 'Action: list_files\nAction Input: {"path":"."}'
+        : "Final Answer: gave up listing.";
+    };
+    const r1 = await runReactAgent({
+      llm: denyLlm,
+      system: "s",
+      task: "t",
+      toolList: readonlyTools(),
+      maxSteps: 4,
+      gate: async () => false,
+    });
+    assert.equal(r1.toolCalls, 0, "denied tool did not execute");
+    assert.match(r1.answer, /gave up/);
+
+    // Allow: same flow but the gate permits → list_files runs once.
+    let n = 0;
+    const allowLlm = async (): Promise<string> => {
+      n++;
+      return n === 1
+        ? 'Action: list_files\nAction Input: {"path":"."}'
+        : "Final Answer: listed.";
+    };
+    const r2 = await runReactAgent({
+      llm: allowLlm,
+      system: "s",
+      task: "t",
+      toolList: readonlyTools(),
+      maxSteps: 4,
+      gate: async () => true,
+    });
+    assert.equal(r2.toolCalls, 1, "allowed tool executed once");
+  });
+});

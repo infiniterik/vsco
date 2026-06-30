@@ -28,6 +28,7 @@ const RUNTIME_FILES = [
   "hooks/react-step.js",
   "hooks/pre-compact.js",
   "hooks/council.js",
+  "hooks/agent.js",
   "hooks/pdf.worker.mjs",
 ];
 
@@ -38,6 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("react-byok.showOutput", () => reactOutput().show(true)),
     vscode.commands.registerCommand("react-byok.regatherContext", regatherContext),
     vscode.commands.registerCommand("react-byok.convene", () => conveneCouncil(context)),
+    vscode.commands.registerCommand("react-byok.run", () => runAgent(context)),
   );
   watchCommandOutput(context);
   watchApprovalRequests(context);
@@ -48,6 +50,59 @@ export function activate(context: vscode.ExtensionContext): void {
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     void writeAgents(folder.uri.fsPath, version).catch(() => undefined);
   }
+}
+
+/**
+ * Hook-free agent runner. For machines where VS Code's hooks can't spawn (no cmd.exe),
+ * this drives the ReAct loop without hooks: it spawns the bundled runner DIRECTLY with
+ * VS Code's Node (no shell → no cmd), talking to the OpenAI-compatible endpoint in
+ * council.json. Progress streams to the "ReAct Tools" output; the answer lands in ANSWER.md.
+ */
+async function runAgent(context: vscode.ExtensionContext): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showErrorMessage("ReAct BYOK: open a folder first.");
+    return;
+  }
+  const root = folder.uri.fsPath;
+  const task = await vscode.window.showInputBox({
+    title: "Run ReAct agent (hook-free)",
+    prompt: "What should the agent do? It uses the model in .react-byok/council.json and the tools.",
+    ignoreFocusOut: true,
+  });
+  if (!task) return;
+
+  const runtime = await stageRuntime(context);
+  const script = path.join(runtime, "hooks", "agent.js");
+  if (!(await exists(script))) {
+    void vscode.window.showErrorMessage("ReAct BYOK: agent runner not found — reinstall the extension.");
+    return;
+  }
+
+  reactOutput().show(true);
+  reactOutput().appendLine(`[agent] starting: ${task}`);
+  const child = spawn(process.execPath, [script, task], {
+    // Direct spawn, no shell → never invokes cmd.exe. Local cwd; workspace via env.
+    cwd: runtime,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", REACT_BYOK_WORKSPACE: root },
+    windowsHide: true,
+  });
+  child.on("error", (err) => void vscode.window.showErrorMessage(`Agent failed to start: ${String(err)}`));
+  child.on("close", async (code) => {
+    if (code !== 0) {
+      void vscode.window.showWarningMessage(`Agent exited with code ${code}. See the "ReAct Tools" output.`);
+      return;
+    }
+    const answer = path.join(root, "ANSWER.md");
+    if (await exists(answer)) {
+      const choice = await vscode.window.showInformationMessage("Agent finished — wrote ANSWER.md.", "Open");
+      if (choice === "Open") {
+        const doc = await vscode.workspace.openTextDocument(answer);
+        await vscode.window.showTextDocument(doc);
+      }
+    }
+  });
+  context.subscriptions.push({ dispose: () => child.kill() });
 }
 
 /** Local (never-OneDrive) directory holding the staged hook runtime. */

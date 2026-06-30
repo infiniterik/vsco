@@ -1,3 +1,4 @@
+import { recordCommandOutput } from "./debug.js";
 import type { ContextConfig } from "./docs.js";
 import { formatObservation, parseAssistantTurn, renderPreamble } from "./format.js";
 import type { ChatMessage, LlmConfig, LlmFn } from "./llm.js";
@@ -79,6 +80,10 @@ export async function runReactAgent(opts: {
   task: string;
   toolList: Tool[];
   maxSteps: number;
+  /** Authorize a tool call before it runs; return false to deny (fed back as a refusal). */
+  gate?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
+  /** Observe each step (for progress UI / logging). */
+  onStep?: (info: { step: number; kind: string; action?: string; text: string }) => void;
 }): Promise<{ answer: string; toolCalls: number }> {
   const { llm, toolList, maxSteps } = opts;
   const messages: ChatMessage[] = [
@@ -90,6 +95,7 @@ export async function runReactAgent(opts: {
     const text = await llm(messages);
     messages.push({ role: "assistant", content: text });
     const turn = parseAssistantTurn(text);
+    opts.onStep?.({ step, kind: turn.kind, action: turn.kind === "action" ? turn.action : undefined, text });
     if (turn.kind === "final") return { answer: turn.answer, toolCalls };
     if (turn.kind === "error") {
       messages.push({ role: "user", content: turn.reason });
@@ -103,7 +109,15 @@ export async function runReactAgent(opts: {
       });
       continue;
     }
+    if (opts.gate && !(await opts.gate(turn.action, turn.input))) {
+      messages.push({
+        role: "user",
+        content: `Execution not authorized by the user: ${turn.action}. Do not retry the same action; choose a different approach or give your Final Answer.`,
+      });
+      continue;
+    }
     const result = await tool.execute(turn.input);
+    recordCommandOutput(turn.action, turn.input, result);
     toolCalls++;
     messages.push({ role: "user", content: formatObservation(turn.action, result) });
   }

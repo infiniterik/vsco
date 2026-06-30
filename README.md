@@ -106,6 +106,21 @@ npm test           # parser + simulated Stop-step tests
   **ArXiv Researcher** (literature reviews over local papers + arXiv). Each agent file
   is just a task-specific prompt; add more via the `AGENTS` list in `src/extension.ts`.
 
+## Hook-free agent (no cmd.exe / locked-down Windows)
+
+VS Code launches agent hooks via `spawn(shell: true)` → **cmd.exe** on Windows. On
+locked-down machines without a usable `cmd.exe`, that spawn fails with `spawn UNKNOWN`
+before the hook runs, and nothing in the hook config can avoid it. For those machines,
+run the agent **without hooks**:
+
+- *ReAct BYOK: Run agent (hook-free)* → type a task. The extension spawns the runner
+  **directly** (`spawn(Code.exe, …)`, no shell → never touches cmd.exe), driving the same
+  ReAct loop against the OpenAI-compatible endpoint in `.react-byok/council.json`, with the
+  full toolset and the same Allow/Deny approval modal. Progress streams to the *ReAct Tools*
+  output; the answer is written to `ANSWER.md`.
+- Trade-off: it runs as a command + output flow, not the in-chat agent (the chat panel is
+  what requires the hooks). Everything else — tools, document context, guardrails — is shared.
+
 ## Council of experts
 
 Run **several expert agents that debate** over the same documents and reach a verdict —

@@ -42,6 +42,8 @@ await build({
     // The council runner gathers documents (pdf.js) and runs experts as ReAct agents,
     // so it lives in the pdf-bundled group and beside pdf.worker.mjs.
     "hooks/council": "src/council-run.ts",
+    // The hook-free single-agent runner (launched directly, bypassing cmd.exe).
+    "hooks/agent": "src/agent-run.ts",
   },
   outdir: "dist",
   external: ["canvas"], // optional native dep of pdf.js, not needed for text extraction
