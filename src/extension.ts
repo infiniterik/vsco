@@ -362,8 +362,14 @@ function hookEntry(scriptPath: string, timeout: number, cwd: string, workspace: 
     type: "command",
     // POSIX shells (macOS/Linux): expand the env vars, quoted to preserve spaces.
     command: `"$REACT_BYOK_EXE" "$REACT_BYOK_SCRIPT"`,
-    // PowerShell (VS Code's Windows default): `&` call operator on the env-var values.
+    // VS Code's documented platform overrides (run via shell:true → cmd.exe on Windows).
     windows: `& "$env:REACT_BYOK_EXE" "$env:REACT_BYOK_SCRIPT"`,
+    // Some agent runtimes use language-specific keys (`powershell`/`bash`) and pipe them
+    // straight to that interpreter, bypassing cmd.exe. VS Code's documented schema doesn't
+    // list these, but emitting them is harmless if ignored and fixes cmd-less Windows boxes
+    // if honored.
+    powershell: `& "$env:REACT_BYOK_EXE" "$env:REACT_BYOK_SCRIPT"`,
+    bash: `"$REACT_BYOK_EXE" "$REACT_BYOK_SCRIPT"`,
     cwd,
     // ELECTRON_RUN_AS_NODE: run the VS Code executable as plain Node.
     // REACT_BYOK_DEBUG: append a diagnostic line to .react-byok/hook.log each call.
