@@ -2,7 +2,7 @@
   "name": "react-byok",
   "displayName": "ReAct BYOK",
   "description": "Run a no-tool-calling LLM as a ReAct agent via VS Code agent hooks.",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "publisher": "react-byok",
   "license": "MIT",
   "repository": {
@@ -40,6 +40,55 @@
       {
         "command": "react-byok.run",
         "title": "ReAct BYOK: Run agent (hook-free)"
+      },
+      {
+        "command": "react-byok.doctor",
+        "title": "ReAct BYOK: Diagnose setup"
+      },
+      {
+        "command": "react-byok.openConfig",
+        "title": "ReAct BYOK: Open model config"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "react-byok.onboarding",
+        "title": "Get started with ReAct BYOK",
+        "description": "Run a no-tool-calling model as a ReAct agent. Set it up, point it at your model, and pick the path that works on your machine (hooks, or hook-free for locked-down/OneDrive Windows).",
+        "steps": [
+          {
+            "id": "setup",
+            "title": "Set up this workspace",
+            "description": "Stage the runtime and write the config files.\n[Run setup](command:react-byok.setup)",
+            "media": { "markdown": "media/onboarding/setup.md" },
+            "completionEvents": ["onCommand:react-byok.setup"]
+          },
+          {
+            "id": "model",
+            "title": "Point it at your model",
+            "description": "Set your OpenAI-compatible endpoint, key, and model in council.json.\n[Open model config](command:react-byok.openConfig)",
+            "media": { "markdown": "media/onboarding/model.md" }
+          },
+          {
+            "id": "diagnose",
+            "title": "Check your environment",
+            "description": "See whether the in-chat hooks will work here, or whether to use the hook-free runner.\n[Diagnose setup](command:react-byok.doctor)",
+            "media": { "markdown": "media/onboarding/doctor.md" },
+            "completionEvents": ["onCommand:react-byok.doctor"]
+          },
+          {
+            "id": "hooks",
+            "title": "Path A — in-chat agent (hooks)",
+            "description": "Enable the hooks preview, then pick the ReAct BYOK agent in chat.\n[Enable hooks setting](command:workbench.action.openSettings?%22chat.useCustomAgentHooks%22)",
+            "media": { "markdown": "media/onboarding/hooks.md" }
+          },
+          {
+            "id": "hookfree",
+            "title": "Path B — hook-free runner (no cmd.exe / OneDrive)",
+            "description": "Run the agent without hooks — it spawns directly and writes ANSWER.md.\n[Run agent (hook-free)](command:react-byok.run)",
+            "media": { "markdown": "media/onboarding/hookfree.md" }
+          }
+        ]
       }
     ]
   },

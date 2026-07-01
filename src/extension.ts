@@ -40,6 +40,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("react-byok.regatherContext", regatherContext),
     vscode.commands.registerCommand("react-byok.convene", () => conveneCouncil(context)),
     vscode.commands.registerCommand("react-byok.run", () => runAgent(context)),
+    vscode.commands.registerCommand("react-byok.doctor", () => diagnose(context)),
+    vscode.commands.registerCommand("react-byok.openConfig", () => openCouncilConfig()),
   );
   watchCommandOutput(context);
   watchApprovalRequests(context);
@@ -103,6 +105,114 @@ async function runAgent(context: vscode.ExtensionContext): Promise<void> {
     }
   });
   context.subscriptions.push({ dispose: () => child.kill() });
+}
+
+/** Open `.react-byok/council.json` (where the OpenAI-compatible endpoint is configured). */
+async function openCouncilConfig(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showErrorMessage("ReAct BYOK: open a folder first, then run setup.");
+    return;
+  }
+  const p = path.join(folder.uri.fsPath, ".react-byok", "council.json");
+  if (!(await exists(p))) {
+    void vscode.window.showErrorMessage("ReAct BYOK: council.json not found — run setup first.");
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(p);
+  await vscode.window.showTextDocument(doc);
+}
+
+/**
+ * Inspect the environment and tell the user which path will work (hooks vs hook-free),
+ * writing a report to the "ReAct Tools" output channel. This is the "active" part of
+ * onboarding: it turns the whole cmd.exe/OneDrive saga into a one-click check.
+ */
+async function diagnose(context: vscode.ExtensionContext): Promise<void> {
+  const out = reactOutput();
+  out.show(true);
+  const ok = (s: string): void => out.appendLine(`  [ok]   ${s}`);
+  const warn = (s: string): void => out.appendLine(`  [warn] ${s}`);
+  const bad = (s: string): void => out.appendLine(`  [FAIL] ${s}`);
+
+  out.appendLine("");
+  out.appendLine("=== ReAct BYOK — setup diagnostics ===");
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    bad("No folder open. Open your project folder, then re-run diagnostics.");
+    return;
+  }
+  const root = folder.uri.fsPath;
+  out.appendLine(`Workspace: ${root}`);
+  out.appendLine(`Platform:  ${process.platform}`);
+  out.appendLine("");
+
+  // OneDrive?
+  const onOneDrive =
+    /onedrive/i.test(root) || Boolean(process.env.OneDrive && root.startsWith(process.env.OneDrive));
+  if (onOneDrive) warn("Workspace is under OneDrive — placeholder files/dirs can break hook spawning.");
+  else ok("Workspace is not under OneDrive.");
+
+  // Windows: cmd.exe present? (VS Code runs hooks via shell:true -> cmd.exe)
+  let cmdAvailable = true;
+  if (process.platform === "win32") {
+    const cmdPath = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+    cmdAvailable = await exists(cmdPath);
+    if (cmdAvailable) ok(`cmd.exe found (${cmdPath}).`);
+    else bad(`cmd.exe NOT found (${cmdPath}). VS Code hooks spawn via cmd.exe and will fail.`);
+  }
+
+  // hooks preview setting
+  const hooksEnabled = Boolean(vscode.workspace.getConfiguration().get("chat.useCustomAgentHooks"));
+  if (hooksEnabled) ok("chat.useCustomAgentHooks is enabled.");
+  else warn("chat.useCustomAgentHooks is not enabled (needed for the in-chat hook path).");
+
+  // staged runtime present?
+  const staged = path.join(runtimeRoot(context), "hooks", "react-step.js");
+  if (await exists(staged)) ok("Hook runtime is staged locally.");
+  else warn("Hook runtime not staged yet — run 'ReAct BYOK: Set up in this workspace'.");
+
+  // react.json present?
+  if (await exists(path.join(root, ".github", "hooks", "react.json"))) ok(".github/hooks/react.json present.");
+  else warn(".github/hooks/react.json missing — run setup.");
+
+  // hook.log — did hooks ever actually run?
+  const hookRan = await exists(path.join(root, ".react-byok", "hook.log"));
+  if (hookRan) ok(".react-byok/hook.log exists — hooks have executed at least once.");
+  else warn(".react-byok/hook.log not created — the hooks have not run yet.");
+
+  // model endpoint for the hook-free runner / council
+  let endpointReady = false;
+  try {
+    const c = JSON.parse(readFileSync(path.join(root, ".react-byok", "council.json"), "utf8")) as {
+      llm?: { baseUrl?: string; model?: string; apiKey?: string };
+    };
+    const url = c.llm?.baseUrl ?? "";
+    endpointReady = Boolean(url) && !/localhost:11434\/v1$/.test(url);
+    out.appendLine(`         model endpoint: ${url || "unset"} (model: ${c.llm?.model ?? "unset"})`);
+    if (!endpointReady) warn("council.json still has the default endpoint — set llm.baseUrl/model/apiKey to yours.");
+    else ok("Model endpoint is configured in council.json.");
+  } catch {
+    warn("council.json missing — run setup (required for the hook-free runner).");
+  }
+
+  // Recommendation
+  out.appendLine("");
+  out.appendLine("=== Recommendation ===");
+  const hooksBlocked = process.platform === "win32" && (!cmdAvailable || onOneDrive);
+  if (hooksBlocked || !hookRan) {
+    out.appendLine("Your environment may block VS Code's hook spawning (no cmd.exe and/or OneDrive).");
+    out.appendLine("Use the HOOK-FREE path — it never uses hooks or cmd.exe:");
+    out.appendLine("  1. Set your model in council.json  →  command: ReAct BYOK: Open model config");
+    out.appendLine("  2. Run  →  command: ReAct BYOK: Run agent (hook-free)");
+    out.appendLine("It writes ANSWER.md and streams here. (The chat-panel path needs working hooks.)");
+  } else {
+    out.appendLine("Hooks look viable here.");
+    out.appendLine("  1. Ensure chat.useCustomAgentHooks is on, run setup.");
+    out.appendLine("  2. Pick the 'ReAct BYOK' agent in chat.");
+    out.appendLine("If hook.log never updates when you use the agent, switch to 'Run agent (hook-free)'.");
+  }
+  out.appendLine("");
 }
 
 /** Local (never-OneDrive) directory holding the staged hook runtime. */

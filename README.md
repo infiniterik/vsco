@@ -25,6 +25,11 @@ executes actions directly — no separate tool server.
 
 ## Install (VS Code extension / VSIX)
 
+> **New here?** Follow [`ONBOARDING.md`](ONBOARDING.md), or run the interactive guide:
+> Command Palette → *Welcome: Open Walkthrough…* → **Get started with ReAct BYOK**. It sets
+> up the workspace, points it at your model, and runs **ReAct BYOK: Diagnose setup** to tell
+> you whether to use the in-chat hooks or the hook-free runner.
+
 This is packaged as a VS Code extension that bundles the hook runtime.
 
 1. Install the VSIX:
